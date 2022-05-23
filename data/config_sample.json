@@ -1,0 +1,49 @@
+{
+	# Bot backbone/backend communication entry point
+	"redis": {
+		# localhost if not set
+		"server": "redis.tld",
+		
+		# 6379 if not set
+		"port": 6379,
+
+		# Must be set to redis pubsub channel where chat client daemons sending messages
+		"channel" : "misc"
+	},
+
+	# Bot frontend settings
+	"irc": {
+		# localhost if not set
+		"server": "irc.tld",
+
+		# 6667 usually used for non-encrypted communication, 6697 - for encrypted
+		# If omitted, assume 6667 by default
+		"port": 6667,
+
+		# Who the fuck need this security shit? :) off by default
+		# Please use encryption for communicating over internets
+		"ssl": false,
+
+		# No certificate check by default.
+		# You really want to check certificate?
+		"ssl_verify": false,
+
+		# Irc channels to join on bot startup 
+		"channels": [
+			"#my_channel",
+			"#another_channel password"
+		]
+	},
+
+	# By default info if setting omited
+	"loglevel" : "info",
+
+	# If not set defaults to stdout
+	"log" : "/var/log/aleesa-misc-go/aleesa-misc-go.log",
+
+	# Must be set - it is default command prefix
+	"csign" : "!",
+
+	# Will be set to 5 if not set
+	"forwards_max" : 5
+}
