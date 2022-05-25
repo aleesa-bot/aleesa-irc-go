@@ -9,7 +9,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
-	"time"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/hjson/hjson-go"
@@ -18,17 +17,20 @@ import (
 
 // Конфиг
 type myConfig struct {
-	Server          string `json:"server,omitempty"`
-	Port            int    `json:"port,omitempty"`
-	Loglevel        string `json:"loglevel,omitempty"`
-	Log             string `json:"log,omitempty"`
-	Channel         string `json:"channel,omitempty"`
-	ForwardChannels struct {
-		Games   string `json:"games,omitempty"`
-		Phrases string `json:"phrases,omitempty"`
-		Webapp  string `json:"webapp,omitempty"`
-		Craniac string `json:"craniac,omitempty"`
-	} `json:"forward_channels"`
+	Redis struct {
+		Server  string `json:"server,omitempty"`
+		Port    int    `json:"port,omitempty"`
+		Channel string `json:"channel,omitempty"`
+	} `json:"redis"`
+	Irc struct {
+		Server    string   `json:"server,omitempty"`
+		Port      int      `json:"port,omitempty"`
+		Ssl       bool     `json:"ssl,omitempty"`
+		SslVerify bool     `json:"ssl_verify,omitempty"`
+		Channels  []string `json:"channels"`
+	}
+	Loglevel    string `json:"loglevel,omitempty"`
+	Log         string `json:"log,omitempty"`
 	Csign       string `json:"csign,omitempty"`
 	ForwardsMax int64  `json:"forwards_max,omitempty"`
 }
@@ -157,40 +159,24 @@ func readConfig() {
 		}
 
 		// Валидируем значения из конфига
-		if sampleConfig.Server == "" {
-			sampleConfig.Server = "localhost"
+		if sampleConfig.Redis.Server == "" {
+			sampleConfig.Redis.Server = "localhost"
 		}
 
-		if sampleConfig.Port == 0 {
-			sampleConfig.Port = 6379
+		if sampleConfig.Redis.Port == 0 {
+			sampleConfig.Redis.Port = 6379
 		}
 
+		if sampleConfig.Redis.Channel == "" {
+			log.Errorf("Channel field in config file %s must be set", location)
+		}
+
+		// TODO: Set/validate irc vars
 		if sampleConfig.Loglevel == "" {
 			sampleConfig.Loglevel = "info"
 		}
 
 		// sampleConfig.Log = "" if not set
-
-		if sampleConfig.Channel == "" {
-			log.Errorf("Channel field in config file %s must be set", location)
-		}
-
-		// Частичная проверка, ровно то, куда мы _точно_ щепрввляем сообщения исходя из бизнес-логики приложения
-		if sampleConfig.ForwardChannels.Games == "" {
-			sampleConfig.ForwardChannels.Games = "games"
-		}
-
-		if sampleConfig.ForwardChannels.Phrases == "" {
-			sampleConfig.ForwardChannels.Phrases = "phrases"
-		}
-
-		if sampleConfig.ForwardChannels.Webapp == "" {
-			sampleConfig.ForwardChannels.Webapp = "webapp"
-		}
-
-		if sampleConfig.ForwardChannels.Craniac == "" {
-			sampleConfig.ForwardChannels.Craniac = "craniac"
-		}
 
 		if sampleConfig.Csign == "" {
 			log.Errorf("Csign field in config file %s must be set", location)
@@ -247,7 +233,7 @@ func sigHandler() {
 }
 
 // Горутинка, которая парсит json-чики прилетевшие из REDIS-ки
-func msgParser(ctx context.Context, msg string) {
+func msgParser(msg string) {
 	return
 }
 
@@ -297,11 +283,12 @@ func main() {
 
 	// Иницализируем клиента
 	redisClient = redis.NewClient(&redis.Options{
-		Addr: fmt.Sprintf("%s:%d", config.Server, config.Port),
+		Addr: fmt.Sprintf("%s:%d", config.Redis.Server, config.Redis.Port),
 	})
 
-	log.Debugf("Lazy connect() to redis at %s:%d", config.Server, config.Port)
-	subscriber = redisClient.Subscribe(ctx, config.Channel)
+	log.Debugf("Lazy connect() to redis at %s:%d", config.Redis.Server, config.Redis.Port)
+	subscriber = redisClient.Subscribe(ctx, config.Redis.Channel)
+	redisMsgChan := subscriber.Channel()
 
 	// Самое время поставить траппер сигналов
 	signal.Notify(sigChan,
@@ -312,23 +299,7 @@ func main() {
 	go sigHandler()
 
 	// Обработчик событий от редиски
-	for {
-		if shutdown {
-			time.Sleep(1 * time.Second)
-			continue
-		}
-
-		msg, err := subscriber.ReceiveMessage(ctx)
-
-		if err != nil {
-			if !shutdown {
-				log.Warnf("Unable to connect to redis at %s:%d: %s", config.Server, config.Port, err)
-			}
-
-			time.Sleep(1 * time.Second)
-			continue
-		}
-
-		go msgParser(ctx, msg.Payload)
+	for msg := range redisMsgChan {
+		msgParser(msg.Payload)
 	}
 }
