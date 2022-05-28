@@ -1,5 +1,5 @@
 {
-	# Bot backbone/backend communication entry point
+	# Бэкэнд бота работает по редиске
 	"redis": {
 		# localhost if not set
 		"server": "redis.tld",
@@ -7,8 +7,11 @@
 		# 6379 if not set
 		"port": 6379,
 
-		# Must be set to redis pubsub channel where chat client daemons sending messages
+		# Канал, на котором работает msg router
 		"channel" : "misc"
+
+		# Канал, в который пишут другие модули бота сообщения для irc-модуля
+		"my_channel" : "irc"
 	},
 
 	# Bot frontend settings
@@ -28,7 +31,16 @@
 		# You really want to check certificate?
 		"ssl_verify": false,
 
-		# Irc channels to join on bot startup 
+		# Nick
+		"nick": "aleesa",
+
+		# Irc user, defaulting to nick
+		"user": "aleesa",
+
+		# Password for nickserv, nickserv auth will be omitted if password is missing
+		"password",
+
+		# Irc channels to join on bot startup
 		"channels": [
 			"#my_channel",
 			"#another_channel password"
