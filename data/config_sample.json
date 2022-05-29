@@ -38,7 +38,7 @@
 		"user": "aleesa",
 
 		# Password for nickserv, nickserv auth will be omitted if password is missing
-		"password",
+		"password": "secret",
 
 		# Irc channels to join on bot startup
 		"channels": [

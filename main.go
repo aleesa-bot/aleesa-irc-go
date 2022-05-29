@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/hjson/hjson-go"
@@ -280,9 +281,108 @@ func sigHandler() {
 	}
 }
 
-// msgParser парсит json-чики прилетевшие из REDIS-ки
-func msgParser(msg string) {
+// redisMsgParser парсит json-чики прилетевшие из REDIS-ки
+func redisMsgParser(msg string) {
 	return
+}
+
+// ircMsgParser парсит сообщения, прилетевшие из IRC-ки
+func ircMsgParser(channel string, nick string, source string, msg string) {
+	switch {
+	case msg == fmt.Sprintf("%shelp", config.Csign) || msg == fmt.Sprintf("%sпомощь", config.Csign):
+		ircClient.Privmsg(nick, fmt.Sprintf("%shelp | %sпомощь             - это сообщение", config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sanek | %sанек | %sанекдот    - рандомный анекдот с anekdot.ru", config.Csign, config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sbuni                       - комикс-стрип hapi buni", config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sbunny                      - кролик", config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%srabbit | %sкролик           - кролик", config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%scat | %sкис                 - кошечка", config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sdice | %sroll | %sкости      - бросить кости", config.Csign, config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sdig | %sкопать              - заняться археологией", config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sdrink | %sпраздник          - какой сегодня праздник?", config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sfish | %sfisher             - порыбачить", config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sрыба | %sрыбка | %sрыбалка   - порыбачить", config.Csign, config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sf | %sф                     - рандомная фраза из сборника цитат fortune_mod", config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sfortune | %sфортунка        - рандомная фраза из сборника цитат fortune_mod", config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sfox | %sлис                 - лисичка", config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sfriday | %sпятница          - а не пятница ли сегодня?", config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sfrog | %sлягушка            - лягушка", config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%shorse | %sлошадь | %sлошадка - лошадка", config.Csign, config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%skarma фраза                - посмотреть карму фразы", config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sкарма фраза                - посмотреть карму фразы", config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintln("фраза++ | фраза--           - повысить или понизить карму фразы"))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%slat | %sлат                 - сгенерировать фразу из крылатого латинского выражения", config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%smonkeyuser                 - комикс-стрип MonkeyUser", config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sowl | %sсова                - сова", config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sping | %sпинг               - попинговать бота", config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sproverb | %sпословица       - рандомная русская пословица", config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%ssnail | %sулитка            - улитка", config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%ssome_brew                  - выдать соответствующий напиток, бармен может налить rum, ром, vodka, водку, beer, пиво, tequila, текила, whisky, виски, absinthe, абсент", config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sver | %sversion             - написать что-то про версию ПО", config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sверсия                     - написать что-то про версию ПО", config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sw город | %sп город         - погода в городе", config.Csign, config.Csign))
+		time.Sleep(250 * time.Millisecond)
+		ircClient.Privmsg(nick, fmt.Sprintf("%sxkcd                       - комикс-стрип с xkcb.ru", config.Csign))
+		return
+
+	default:
+		var message sMsg
+		message.From = config.Redis.MyChannel
+		message.Userid = nick
+		message.Chatid = channel
+		message.Message = msg
+		message.Plugin = config.Redis.MyChannel
+		message.Mode = "public"
+		message.Misc.Fwdcnt = 0
+		message.Misc.Csign = config.Csign
+		message.Misc.Username = nick
+		message.Misc.Answer = 1
+		message.Misc.Botnick = config.Irc.Nick
+		message.Misc.Msgformat = 0
+
+		data, err := json.Marshal(message)
+
+		if err != nil {
+			log.Warnf("Unable to to serialize message for redis: %s", err)
+			return
+		}
+
+		// Заталкиваем наш json в редиску
+		if err := redisClient.Publish(ctx, config.Redis.Channel, data).Err(); err != nil {
+			log.Warnf("Unable to send data to redis channel %s: %s", config.Redis.Channel, err)
+		} else {
+			log.Debugf("Send msg to redis channel %s: %s", config.Redis.Channel, string(data))
+		}
+		return
+	}
 }
 
 // ircClientInit горутинка для работы с протоколом irc
@@ -410,7 +510,7 @@ func ircClientRun() {
 
 		// Здесь у нас парсер сообщений из IRC
 		ircClient.AddCallback("PRIVMSG", func(e *irc.Event) {
-			return
+			ircMsgParser(e.Arguments[0], e.Nick, e.Source, e.Arguments[1])
 		})
 	}
 }
@@ -480,6 +580,6 @@ func main() {
 
 	// Обработчик событий от редиски
 	for msg := range redisMsgChan {
-		msgParser(msg.Payload)
+		redisMsgParser(msg.Payload)
 	}
 }
