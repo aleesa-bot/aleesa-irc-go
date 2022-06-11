@@ -1,15 +1,13 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/davecgh/go-spew/spew"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -17,7 +15,6 @@ import (
 func redisMsgParser(msg string) {
 	var sendTo string
 	var j rMsg
-	var message sMsg
 
 	log.Debugf("Incomming raw json: %s", msg)
 
@@ -32,12 +29,12 @@ func redisMsgParser(msg string) {
 		return
 	}
 
-	if exist := j.ChatID; exist == "" {
+	if exist := j.Chatid; exist == "" {
 		log.Warnf("Incorrect msg from redis, no chatid field: %s", msg)
 		return
 	}
 
-	if exist := j.UserID; exist == "" {
+	if exist := j.Userid; exist == "" {
 		log.Warnf("Incorrect msg from redis, no userid field: %s", msg)
 		return
 	}
@@ -67,13 +64,13 @@ func redisMsgParser(msg string) {
 
 	// j.Misc.BotNick тоже можно не передавать, тогда будет записана пустая строка
 	// j.Misc.CSign если нам его не передали, возьмём значение из конфига
-	if exist := j.Misc.CSign; exist == "" {
-		j.Misc.CSign = config.CSign
+	if exist := j.Misc.Csign; exist == "" {
+		j.Misc.Csign = config.Csign
 	}
 
 	// j.Misc.FwdCnt если нам его не передали, то будет 0
-	if exist := j.Misc.FwdCnt; exist == 0 {
-		j.Misc.FwdCnt = 1
+	if exist := j.Misc.Fwdcnt; exist == 0 {
+		j.Misc.Fwdcnt = 1
 	}
 
 	// j.Misc.GoodMorning может быть быть 1 или 0, по-умолчанию 0
@@ -82,16 +79,8 @@ func redisMsgParser(msg string) {
 
 	// Отвалидировались, теперь вернёмся к нашим баранам.
 
-	// Если у нас циклическая пересылка сообщения, попробуем её тут разорвать, отбросив сообщение
-	if j.Misc.FwdCnt > config.ForwardsMax {
-		log.Warnf("Discarding msg with fwd_cnt exceeding max value: %s", msg)
-		return
-	} else {
-		j.Misc.FwdCnt++
-	}
-
-	// Отвалидировали входящее сообщение, теперь можно заняться делом
-
+	log.Error(spew.Sdump(j))
+	log.Debug(sendTo)
 	return
 }
 
@@ -160,7 +149,6 @@ func ircMsgParser(channel string, nick string, source string, msg string) {
 		ircClient.Privmsg(nick, fmt.Sprintf("%sw город | %sп город         - погода в городе", config.Csign, config.Csign))
 		time.Sleep(250 * time.Millisecond)
 		ircClient.Privmsg(nick, fmt.Sprintf("%sxkcd                       - комикс-стрип с xkcb.ru", config.Csign))
-		return
 
 	default:
 		var message sMsg
@@ -184,12 +172,9 @@ func ircMsgParser(channel string, nick string, source string, msg string) {
 			return
 		}
 
-		// Заталкиваем наш json в редиску
-		if err := redisClient.Publish(ctx, config.Redis.Channel, data).Err(); err != nil {
-			log.Warnf("Unable to send data to redis channel %s: %s", config.Redis.Channel, err)
-		} else {
-			log.Debugf("Send msg to redis channel %s: %s", config.Redis.Channel, string(data))
-		}
+		// Редиска не нужна, если мы можем передать это всё прямо в функцию-парсер сообщений.
+
+		redisMsgParser(string(data))
 		return
 	}
 }
@@ -224,29 +209,7 @@ func init() {
 }
 
 func main() {
-	// Main context
-	var ctx = context.Background()
-
-	// Откроем лог и скормим его логгеру
-	if config.Log != "" {
-		logfile, err := os.OpenFile(config.Log, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
-
-		if err != nil {
-			log.Fatalf("Unable to open log file %s: %s", config.Log, err)
-		}
-
-		log.SetOutput(logfile)
-	}
-
-	// Иницализируем redis-клиента
-	redisClient = redis.NewClient(&redis.Options{
-		Addr: fmt.Sprintf("%s:%d", config.Redis.Server, config.Redis.Port),
-	})
-
-	log.Debugf("Lazy connect() to redis at %s:%d", config.Redis.Server, config.Redis.Port)
-	subscriber = redisClient.Subscribe(ctx, config.Redis.Channel)
-	redisMsgChan := subscriber.Channel()
-
+	log.Error("Starting IRC client")
 	go ircClientRun()
 
 	// Самое время поставить траппер сигналов
@@ -255,10 +218,11 @@ func main() {
 		syscall.SIGTERM,
 		syscall.SIGQUIT)
 
+	log.Error("starting signal handler")
 	go sigHandler()
 
-	// Обработчик событий от редиски
-	for msg := range redisMsgChan {
-		redisMsgParser(msg.Payload)
+	log.Error("running sleep-loop")
+	for {
+		time.Sleep(1 * time.Hour)
 	}
 }
