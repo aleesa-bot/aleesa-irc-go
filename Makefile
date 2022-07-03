@@ -6,7 +6,7 @@ BUILDOPTS=-ldflags="-s -w" -a -gcflags=all=-l
 all: clean build
 
 build:
-	${GOOPTS} go build ${BUILDOPTS} -o i types.go globals.go aleesa-irc-go-lib.go i.go
+	${GOOPTS} go build ${BUILDOPTS} -o aleesa-irc-go types.go globals.go aleesa-irc-go-lib.go main.go
 
 clean:
 	go clean

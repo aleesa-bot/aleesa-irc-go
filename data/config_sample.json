@@ -1,7 +1,7 @@
 {
 	# Бэкэнд бота работает по редиске
 	"redis": {
-		# localhost if not set
+		# Если не задан, будет localhost
 		"server": "redis.tld",
 		
 		# 6379 if not set
@@ -14,48 +14,59 @@
 		"my_channel" : "irc"
 	},
 
-	# Bot frontend settings
+	# Фронт-энд бота
 	"irc": {
-		# localhost if not set
+		# Если не задан, будет localhost
 		"server": "irc.tld",
 
-		# 6667 usually used for non-encrypted communication, 6697 - for encrypted
-		# If omitted, assume 6667 by default
+		# 6667 обычно используется для незашифрованного соединения, 6697 - для шифрованного
+		# Если не задано - 6667
 		"port": 6667,
 
-		# Who the fuck need this security shit? :) off by default
-		# Please use encryption for communicating over internets
+		# Кому нахуй наужно это шифрование? выключено по-умолчанию.
+		# Пожалуйста, используйте шифрованные каналы связи в этих ваших интернетах!
 		"ssl": false,
 
-		# No certificate check by default.
-		# You really want to check certificate?
+		# Не проверяем сертификаты по-умолчанию.
+		# Вам правда хочется всё это проверять?
 		"ssl_verify": false,
 
-		# Nick
+		# Ник бота, желательно его зарегистрировать на стороне irc-сервера. Чтобы не угнали.
 		"nick": "aleesa",
 
-		# Irc user, defaulting to nick
+		# Имя пользователя (поле user в ирк-клиентах, а также username в sasl-авторизации)
 		"user": "aleesa",
 
-		# Password for nickserv, nickserv auth will be omitted if password is missing
+		# Пароль для авторизации у NickServ-а или с помощью sasl-а
+		# Авторизация не используется, если он пустой или не задан
 		"password": "secret",
 
-		# Irc channels to join on bot startup
+		# Если север умеет в sasl-авторизацию, то используем её.
+		"sasl": true,
+
+		# Ирк-каналы, к которым бот попробует присоединиться при старте
 		"channels": [
 			"#my_channel",
 			"#another_channel password"
-		]
+		],
+
+		# Задержка между отправкой сообщений в irc. Если не поставить - будет 0мс.
+		# В IRC есть рэйтлимиты для ограничения спама.
+		# Если лимит превысить, то хороший IRC-сервер начнёт мягко лимитировать клиента (тормозить с ответами клиенту),
+		# но уёбки, вроде libera.chat, могут сообщения пропускать и/или даже кикать клиентов. На случай такого мудацкого
+		# поведения, приходится ограничивать скорость отправки сообщений.
+		"delay": 250
 	},
 
-	# By default info if setting omited
+	# Многословность логов. Если не задано, то info. Debug - ДЕЙСТВИТЕЛЬНО вербозный уровень логгирования.
 	"loglevel" : "info",
 
-	# If not set defaults to stdout
-	"log" : "/var/log/aleesa-misc-go/aleesa-misc-go.log",
+	# Если не задан, логи идут в STDOUT
+	"log" : "/var/log/aleesa-irc-go/aleesa-irc-go.log",
 
-	# Must be set - it is default command prefix
+	# Должен быть установлен в какой-то символ - это символ-префикс, с которого начинаются команды бота
 	"csign" : "!",
 
-	# Will be set to 5 if not set
+	# Будет 5, если не задан. Скорее всего вам не надо это менять.
 	"forwards_max" : 5
 }

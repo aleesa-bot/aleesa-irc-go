@@ -16,7 +16,9 @@ type myConfig struct {
 		Nick      string   `json:"nick,omitempty"`
 		User      string   `json:"user,omitempty"`
 		Password  string   `json:"password,omitempty"`
+		Sasl      bool     `json:"sasl,omitempty"`
 		Channels  []string `json:"channels"`
+		Delay     int      `json:"delay:omitenpty"`
 	}
 	Loglevel    string `json:"loglevel,omitempty"`
 	Log         string `json:"log,omitempty"`
@@ -60,4 +62,9 @@ type sMsg struct {
 		Msgformat   int64  `json:"msg_format"`
 		Username    string `json:"username"`
 	} `json:"misc"`
+}
+
+type iMsg struct {
+	ChatId string
+	Text   string
 }

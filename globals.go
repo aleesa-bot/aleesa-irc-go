@@ -16,6 +16,7 @@ var forwardMax int64 = 5
 
 // Объектики irc-клиента
 var ircClient *irc.Connection
+var nickIsUsed = false
 
 // Объектики клиента-редиски
 var redisClient *redis.Client
@@ -29,3 +30,6 @@ var shutdown = false
 
 // Канал, в который приходят уведомления для хэндлера сигналов от траппера сигналов
 var sigChan = make(chan os.Signal, 1)
+
+// Канал, в который пишутся сообщения для отправки в IRC
+var imChan = make(chan iMsg, 10000)
