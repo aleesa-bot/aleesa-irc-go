@@ -1,0 +1,6 @@
+.idea/**
+.vscode/**
+.vstags
+data/config.json
+data/*_db
+aleesa-irc-go
