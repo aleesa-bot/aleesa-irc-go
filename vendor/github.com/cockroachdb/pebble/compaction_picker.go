@@ -19,8 +19,6 @@ import (
 // heuristic.
 const minIntraL0Count = 4
 
-const levelMultiplier = 10
-
 type compactionEnv struct {
 	earliestUnflushedSeqNum uint64
 	earliestSnapshotSeqNum  uint64
@@ -294,7 +292,9 @@ func (pc *pickedCompaction) setupInputs(
 	// maxExpandedBytes is the maximum size of an expanded compaction. If
 	// growing a compaction results in a larger size, the original compaction
 	// is used instead.
-	maxExpandedBytes := expandedCompactionByteSizeLimit(opts, pc.adjustedOutputLevel, diskAvailBytes)
+	maxExpandedBytes := expandedCompactionByteSizeLimit(
+		opts, pc.adjustedOutputLevel, diskAvailBytes,
+	)
 
 	// Expand the initial inputs to a clean cut.
 	var isCompacting bool
@@ -504,7 +504,7 @@ func expandToAtomicUnit(
 		iter := start.Clone()
 		iter.Prev()
 		for cur, prev := start.Current(), iter.Current(); prev != nil; cur, prev = start.Prev(), iter.Prev() {
-			if cur.Compacting {
+			if cur.IsCompacting() {
 				isCompacting = true
 			}
 			if cmp(prev.Largest.UserKey, cur.Smallest.UserKey) < 0 {
@@ -522,7 +522,7 @@ func expandToAtomicUnit(
 		iter = end.Clone()
 		iter.Next()
 		for cur, next := end.Current(), iter.Current(); next != nil; cur, next = end.Next(), iter.Next() {
-			if cur.Compacting {
+			if cur.IsCompacting() {
 				isCompacting = true
 			}
 			if cmp(cur.Largest.UserKey, next.Smallest.UserKey) < 0 {
@@ -538,7 +538,8 @@ func expandToAtomicUnit(
 		}
 	})
 	inputIter := inputs.Iter()
-	isCompacting = !disableIsCompacting && (isCompacting || inputIter.First().Compacting || inputIter.Last().Compacting)
+	isCompacting = !disableIsCompacting &&
+		(isCompacting || inputIter.First().IsCompacting() || inputIter.Last().IsCompacting())
 	return inputs, isCompacting
 }
 
@@ -576,11 +577,11 @@ type candidateLevelInfo struct {
 
 // compensatedSize returns f's file size, inflated according to compaction
 // priorities.
-func compensatedSize(f *fileMetadata) uint64 {
+func compensatedSize(f *fileMetadata, pointTombstoneWeight float64) uint64 {
 	sz := f.Size
 	// Add in the estimate of disk space that may be reclaimed by compacting
 	// the file's tombstones.
-	sz += f.Stats.PointDeletionsBytesEstimate
+	sz += uint64(float64(f.Stats.PointDeletionsBytesEstimate) * pointTombstoneWeight)
 	sz += f.Stats.RangeDeletionsBytesEstimate
 	return sz
 }
@@ -590,7 +591,9 @@ func compensatedSize(f *fileMetadata) uint64 {
 // a *uint64. Compensated sizes may change once a table's stats are loaded
 // asynchronously, so its values are marked as cacheable only if a file's
 // stats have been loaded.
-type compensatedSizeAnnotator struct{}
+type compensatedSizeAnnotator struct {
+	pointTombstoneWeight float64
+}
 
 var _ manifest.Annotator = compensatedSizeAnnotator{}
 
@@ -607,8 +610,8 @@ func (a compensatedSizeAnnotator) Accumulate(
 	f *fileMetadata, dst interface{},
 ) (v interface{}, cacheOK bool) {
 	vptr := dst.(*uint64)
-	*vptr = *vptr + compensatedSize(f)
-	return vptr, f.Stats.Valid
+	*vptr = *vptr + compensatedSize(f, a.pointTombstoneWeight)
+	return vptr, f.StatsValidLocked()
 }
 
 func (a compensatedSizeAnnotator) Merge(src interface{}, dst interface{}) interface{} {
@@ -622,10 +625,10 @@ func (a compensatedSizeAnnotator) Merge(src interface{}, dst interface{}) interf
 // iterator. Note that this function is linear in the files available to the
 // iterator. Use the compensatedSizeAnnotator if querying the total
 // compensated size of a level.
-func totalCompensatedSize(iter manifest.LevelIterator) uint64 {
+func totalCompensatedSize(iter manifest.LevelIterator, pointTombstoneWeight float64) uint64 {
 	var sz uint64
 	for f := iter.First(); f != nil; f = iter.Next() {
-		sz += compensatedSize(f)
+		sz += compensatedSize(f, pointTombstoneWeight)
 	}
 	return sz
 }
@@ -783,11 +786,11 @@ func (p *compactionPickerByScore) initLevelMaxBytes(inProgressCompactions []comp
 	}
 
 	dbSize += p.levelSizes[0]
-	bottomLevelSize := dbSize - dbSize/levelMultiplier
+	bottomLevelSize := dbSize - dbSize/int64(p.opts.Experimental.LevelMultiplier)
 
 	curLevelSize := bottomLevelSize
 	for level := numLevels - 2; level >= firstNonEmptyLevel; level-- {
-		curLevelSize = int64(float64(curLevelSize) / levelMultiplier)
+		curLevelSize = int64(float64(curLevelSize) / float64(p.opts.Experimental.LevelMultiplier))
 	}
 
 	// Compute base level (where L0 data is compacted to).
@@ -795,7 +798,7 @@ func (p *compactionPickerByScore) initLevelMaxBytes(inProgressCompactions []comp
 	p.baseLevel = firstNonEmptyLevel
 	for p.baseLevel > 1 && curLevelSize > baseBytesMax {
 		p.baseLevel--
-		curLevelSize = int64(float64(curLevelSize) / levelMultiplier)
+		curLevelSize = int64(float64(curLevelSize) / float64(p.opts.Experimental.LevelMultiplier))
 	}
 
 	smoothedLevelMultiplier := 1.0
@@ -823,7 +826,9 @@ func (p *compactionPickerByScore) initLevelMaxBytes(inProgressCompactions []comp
 	}
 }
 
-func calculateSizeAdjust(inProgressCompactions []compactionInfo) [numLevels]int64 {
+func calculateSizeAdjust(
+	inProgressCompactions []compactionInfo, pointTombstoneWeight float64,
+) [numLevels]int64 {
 	// Compute a size adjustment for each level based on the in-progress
 	// compactions. We subtract the compensated size of start level inputs.
 	// Since compensated file sizes may be compensated because they reclaim
@@ -836,7 +841,7 @@ func calculateSizeAdjust(inProgressCompactions []compactionInfo) [numLevels]int6
 
 		for _, input := range c.inputs {
 			real := int64(input.files.SizeSum())
-			compensated := int64(totalCompensatedSize(input.files.Iter()))
+			compensated := int64(totalCompensatedSize(input.files.Iter(), pointTombstoneWeight))
 
 			if input.level != c.outputLevel {
 				sizeAdjust[input.level] -= compensated
@@ -863,7 +868,10 @@ func (p *compactionPickerByScore) calculateScores(
 	}
 	scores[0] = p.calculateL0Score(inProgressCompactions)
 
-	sizeAdjust := calculateSizeAdjust(inProgressCompactions)
+	sizeAdjust := calculateSizeAdjust(
+		inProgressCompactions,
+		p.opts.Experimental.PointTombstoneWeight,
+	)
 	for level := 1; level < numLevels; level++ {
 		levelSize := int64(levelCompensatedSize(p.vers.Levels[level])) + sizeAdjust[level]
 		scores[level].score = float64(levelSize) / float64(p.levelMaxBytes[level])
@@ -987,10 +995,10 @@ func (p *compactionPickerByScore) pickFile(
 			outputFile = outputIter.Next()
 		}
 
-		compacting := f.Compacting
+		compacting := f.IsCompacting()
 		for outputFile != nil && base.InternalCompare(cmp, outputFile.Smallest, f.Largest) < 0 {
 			overlappingBytes += outputFile.Size
-			compacting = compacting || outputFile.Compacting
+			compacting = compacting || outputFile.IsCompacting()
 
 			// For files in the bottommost level of the LSM, the
 			// Stats.RangeDeletionsBytesEstimate field is set to the estimate
@@ -1020,8 +1028,9 @@ func (p *compactionPickerByScore) pickFile(
 			continue
 		}
 
-		scaledRatio := overlappingBytes * 1024 / compensatedSize(f)
-		if scaledRatio < smallestRatio && !f.Compacting {
+		compSz := compensatedSize(f, p.opts.Experimental.PointTombstoneWeight)
+		scaledRatio := overlappingBytes * 1024 / compSz
+		if scaledRatio < smallestRatio && !f.IsCompacting() {
 			smallestRatio = scaledRatio
 			file = startIter.Take()
 		}
@@ -1082,7 +1091,9 @@ func (p *compactionPickerByScore) pickAuto(env compactionEnv) (pc *pickedCompact
 			}
 			fmt.Fprintf(&buf, "  %sL%d: %5.1f  %5.1f  %8s  %8s",
 				marker, info.level, info.score, info.origScore,
-				humanize.Int64(int64(totalCompensatedSize(p.vers.Levels[info.level].Iter()))),
+				humanize.Int64(int64(totalCompensatedSize(
+					p.vers.Levels[info.level].Iter(), p.opts.Experimental.PointTombstoneWeight,
+				))),
 				humanize.Int64(p.levelMaxBytes[info.level]),
 			)
 
@@ -1223,10 +1234,10 @@ func (a elisionOnlyAnnotator) Zero(interface{}) interface{} {
 }
 
 func (a elisionOnlyAnnotator) Accumulate(f *fileMetadata, dst interface{}) (interface{}, bool) {
-	if f.Compacting {
+	if f.IsCompacting() {
 		return dst, true
 	}
-	if !f.Stats.Valid {
+	if !f.StatsValidLocked() {
 		return dst, false
 	}
 	// Bottommost files are large and not worthwhile to compact just
@@ -1322,7 +1333,7 @@ func (p *compactionPickerByScore) pickElisionOnlyCompaction(
 		return nil
 	}
 	candidate := v.(*fileMetadata)
-	if candidate.Compacting || candidate.LargestSeqNum >= env.earliestSnapshotSeqNum {
+	if candidate.IsCompacting() || candidate.LargestSeqNum >= env.earliestSnapshotSeqNum {
 		return nil
 	}
 	lf := p.vers.Levels[numLevels-1].Find(p.opts.Comparer.Compare, candidate)
@@ -1360,7 +1371,7 @@ func (p *compactionPickerByScore) pickRewriteCompaction(env compactionEnv) (pc *
 			continue
 		}
 		candidate := v.(*fileMetadata)
-		if candidate.Compacting {
+		if candidate.IsCompacting() {
 			// Try the next level.
 			continue
 		}
@@ -1662,7 +1673,7 @@ func inputRangeAlreadyCompacting(env compactionEnv, pc *pickedCompaction) bool {
 	for _, cl := range pc.inputs {
 		iter := cl.files.Iter()
 		for f := iter.First(); f != nil; f = iter.Next() {
-			if f.Compacting {
+			if f.IsCompacting() {
 				return true
 			}
 		}

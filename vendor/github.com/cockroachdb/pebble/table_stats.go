@@ -53,7 +53,7 @@ func (d *DB) maybeCollectTableStatsLocked() {
 func (d *DB) updateTableStatsLocked(newFiles []manifest.NewFileEntry) {
 	var needStats bool
 	for _, nf := range newFiles {
-		if !nf.Meta.Stats.Valid {
+		if !nf.Meta.StatsValidLocked() {
 			needStats = true
 			break
 		}
@@ -126,7 +126,8 @@ func (d *DB) collectTableStats() bool {
 	maybeCompact := false
 	for _, c := range collected {
 		c.fileMetadata.Stats = c.TableStats
-		maybeCompact = maybeCompact || c.fileMetadata.Stats.RangeDeletionsBytesEstimate > 0
+		maybeCompact = maybeCompact || c.TableStats.RangeDeletionsBytesEstimate > 0
+		c.fileMetadata.StatsMarkValid()
 	}
 	d.mu.tableStats.cond.Broadcast()
 	d.maybeCollectTableStatsLocked()
@@ -174,7 +175,7 @@ func (d *DB) loadNewFileStats(
 		// collectTableStats updates f.Stats for active files, and we
 		// ensure only one goroutine runs it at a time through
 		// d.mu.tableStats.loading.
-		if nf.Meta.Stats.Valid {
+		if nf.Meta.StatsValidLocked() {
 			continue
 		}
 
@@ -216,9 +217,9 @@ func (d *DB) scanReadStateTableStats(
 			// NB: We're not holding d.mu which protects f.Stats, but only the
 			// active stats collection job updates f.Stats for active files,
 			// and we ensure only one goroutine runs it at a time through
-			// d.mu.tableStats.loading. This makes it safe to read
-			// f.Stats.Valid despite not holding d.mu.
-			if f.Stats.Valid {
+			// d.mu.tableStats.loading. This makes it safe to read validity
+			// through f.Stats.ValidLocked despite not holding d.mu.
+			if f.StatsValidLocked() {
 				continue
 			}
 
@@ -270,13 +271,12 @@ func (d *DB) loadTableStats(
 		// TODO(travers): Once we have real-world data, consider collecting
 		// additional stats that may provide improved heuristics for compaction
 		// picking.
-		stats.NumRangeKeys = r.Properties.NumRangeKeys()
+		stats.NumRangeKeySets = r.Properties.NumRangeKeySets
 		return
 	})
 	if err != nil {
 		return stats, nil, err
 	}
-	stats.Valid = true
 	return stats, compactionHints, nil
 }
 
@@ -305,7 +305,7 @@ func (d *DB) loadTablePointKeyStats(
 func (d *DB) loadTableRangeDelStats(
 	r *sstable.Reader, v *version, level int, meta *fileMetadata, stats *manifest.TableStats,
 ) ([]deleteCompactionHint, error) {
-	iter, err := newCombinedDeletionKeyspanIter(d.cmp, r, meta)
+	iter, err := newCombinedDeletionKeyspanIter(d.opts.Comparer, r, meta)
 	if err != nil {
 		return nil, err
 	}
@@ -550,14 +550,12 @@ func maybeSetStatsFromProperties(meta *fileMetadata, props *sstable.Properties) 
 		pointEstimate = pointDeletionsBytesEstimate(props, avgKeySize, avgValSize)
 	}
 
-	meta.Stats = manifest.TableStats{
-		Valid:                       true,
-		NumEntries:                  props.NumEntries,
-		NumDeletions:                props.NumDeletions,
-		NumRangeKeys:                props.NumRangeKeys(),
-		PointDeletionsBytesEstimate: pointEstimate,
-		RangeDeletionsBytesEstimate: 0,
-	}
+	meta.Stats.NumEntries = props.NumEntries
+	meta.Stats.NumDeletions = props.NumDeletions
+	meta.Stats.NumRangeKeySets = props.NumRangeKeySets
+	meta.Stats.PointDeletionsBytesEstimate = pointEstimate
+	meta.Stats.RangeDeletionsBytesEstimate = 0
+	meta.StatsMarkValid()
 	return true
 }
 
@@ -657,11 +655,11 @@ func estimateEntrySizes(
 // corresponding to the largest and smallest sequence numbers encountered across
 // the range deletes and range keys deletes that comprised the merged spans.
 func newCombinedDeletionKeyspanIter(
-	cmp base.Compare, r *sstable.Reader, m *fileMetadata,
+	comparer *base.Comparer, r *sstable.Reader, m *fileMetadata,
 ) (keyspan.FragmentIterator, error) {
 	// The range del iter and range key iter are each wrapped in their own
 	// defragmenting iter. For each iter, abutting spans can always be merged.
-	var equal = keyspan.DefragmentMethodFunc(func(_ base.Compare, a, b *keyspan.Span) bool { return true })
+	var equal = keyspan.DefragmentMethodFunc(func(_ base.Equal, a, b *keyspan.Span) bool { return true })
 	// Reduce keys by maintaining a slice of at most length two, corresponding to
 	// the largest and smallest keys in the defragmented span. This maintains the
 	// contract that the emitted slice is sorted by (SeqNum, Kind) descending.
@@ -690,7 +688,7 @@ func newCombinedDeletionKeyspanIter(
 				smallest = last
 			}
 		}
-		if largest.Equal(cmp, smallest) {
+		if largest.Equal(comparer.Equal, smallest) {
 			current = append(current[:0], largest)
 		} else {
 			current = append(current[:0], largest, smallest)
@@ -703,11 +701,21 @@ func newCombinedDeletionKeyspanIter(
 	// iters are only added if the particular key kind is present.
 	mIter := &keyspan.MergingIter{}
 	var transform = keyspan.TransformerFunc(func(cmp base.Compare, in keyspan.Span, out *keyspan.Span) error {
+		if in.KeysOrder != keyspan.ByTrailerDesc {
+			panic("pebble: combined deletion iter encountered keys in non-trailer descending order")
+		}
 		out.Start, out.End = in.Start, in.End
 		out.Keys = append(out.Keys[:0], in.Keys...)
+		out.KeysOrder = keyspan.ByTrailerDesc
+		// NB: The order of by-trailer descending may have been violated,
+		// because we've layered rangekey and rangedel iterators from the same
+		// sstable into the same keyspan.MergingIter. The MergingIter will
+		// return the keys in the order that the child iterators were provided.
+		// Sort the keys to ensure they're sorted by trailer descending.
+		keyspan.SortKeysByTrailer(&out.Keys)
 		return nil
 	})
-	mIter.Init(cmp, transform)
+	mIter.Init(comparer.Compare, transform)
 
 	iter, err := r.NewRawRangeDelIter()
 	if err != nil {
@@ -715,12 +723,12 @@ func newCombinedDeletionKeyspanIter(
 	}
 	if iter != nil {
 		dIter := &keyspan.DefragmentingIter{}
-		dIter.Init(cmp, iter, equal, reducer)
+		dIter.Init(comparer, iter, equal, reducer)
 		iter = dIter
 		// Truncate tombstones to the containing file's bounds if necessary.
 		// See docs/range_deletions.md for why this is necessary.
 		iter = keyspan.Truncate(
-			cmp, iter, m.Smallest.UserKey, m.Largest.UserKey, nil, nil,
+			comparer.Compare, iter, m.Smallest.UserKey, m.Largest.UserKey, nil, nil,
 		)
 		mIter.AddLevel(iter)
 	}
@@ -744,10 +752,57 @@ func newCombinedDeletionKeyspanIter(
 			return len(out.Keys) > 0
 		})
 		dIter := &keyspan.DefragmentingIter{}
-		dIter.Init(cmp, iter, equal, reducer)
+		dIter.Init(comparer, iter, equal, reducer)
 		iter = dIter
 		mIter.AddLevel(iter)
 	}
 
 	return mIter, nil
+}
+
+// rangeKeySetsAnnotator implements manifest.Annotator, annotating B-Tree nodes
+// with the sum of the files' counts of range key fragments. Its annotation type
+// is a *uint64. The count of range key sets may change once a table's stats are
+// loaded asynchronously, so its values are marked as cacheable only if a file's
+// stats have been loaded.
+type rangeKeySetsAnnotator struct{}
+
+var _ manifest.Annotator = rangeKeySetsAnnotator{}
+
+func (a rangeKeySetsAnnotator) Zero(dst interface{}) interface{} {
+	if dst == nil {
+		return new(uint64)
+	}
+	v := dst.(*uint64)
+	*v = 0
+	return v
+}
+
+func (a rangeKeySetsAnnotator) Accumulate(
+	f *fileMetadata, dst interface{},
+) (v interface{}, cacheOK bool) {
+	vptr := dst.(*uint64)
+	*vptr = *vptr + f.Stats.NumRangeKeySets
+	return vptr, f.StatsValidLocked()
+}
+
+func (a rangeKeySetsAnnotator) Merge(src interface{}, dst interface{}) interface{} {
+	srcV := src.(*uint64)
+	dstV := dst.(*uint64)
+	*dstV = *dstV + *srcV
+	return dstV
+}
+
+// countRangeKeySetFragments counts the number of RANGEKEYSET keys across all
+// files of the LSM. It only counts keys in files for which table stats have
+// been loaded. It uses a b-tree annotator to cache intermediate values between
+// calculations when possible.
+func countRangeKeySetFragments(v *version) (count uint64) {
+	for l := 0; l < numLevels; l++ {
+		if v.RangeKeyLevels[l].Empty() {
+			continue
+		}
+		count += *v.RangeKeyLevels[l].Annotation(rangeKeySetsAnnotator{}).(*uint64)
+	}
+	return count
 }

@@ -21,7 +21,7 @@ all:
 override testflags :=
 .PHONY: test
 test:
-	${GO} test -mod=vendor -tags '$(TAGS)' ${testflags} -run ${TESTS} ${PKG}
+	${GO} test -tags '$(TAGS)' ${testflags} -run ${TESTS} ${PKG}
 
 .PHONY: testrace
 testrace: testflags += -race -timeout 20m
@@ -46,14 +46,17 @@ crossversion-meta:
 		${GO} test -c ./internal/metamorphic -o './internal/metamorphic/crossversion/head.test'; \
 		${GO} test -tags '$(TAGS)' ${testflags} -v -run 'TestMetaCrossVersion' ./internal/metamorphic/crossversion --version '${LATEST_RELEASE},${LATEST_RELEASE},${LATEST_RELEASE}.test' --version 'HEAD,HEAD,./head.test'
 
+.PHONY: stress-crossversion
+stress-crossversion:
+	STRESS=1 ./scripts/run-crossversion-meta.sh crl-release-21.2 crl-release-22.1 crl-release-22.2 master
+
 .PHONY: generate
 generate:
-	${GO} generate -mod=vendor ${PKG}
+	${GO} generate ${PKG}
 
 mod-update:
 	${GO} get -u
 	${GO} mod tidy
-	${GO} mod vendor
 
 .PHONY: clean
 clean:
@@ -80,7 +83,7 @@ endif
 
 .PHONY: format
 format:
-	for _file in $$(gofmt -s -l . | grep -vE '^vendor/'); do \
+	for _file in $$(gofmt -s -l .); do \
 		gofmt -s -w $$_file ; \
 	done
 
@@ -90,4 +93,5 @@ ifneq ($(git_dirty),)
 	$(error format-check must be invoked on a clean repository)
 endif
 	$(MAKE) format
+	git diff
 	$(MAKE) git-clean-check

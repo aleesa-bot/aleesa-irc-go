@@ -133,9 +133,9 @@ func (c *tableCacheContainer) close() error {
 }
 
 func (c *tableCacheContainer) newIters(
-	file *manifest.FileMetadata, opts *IterOptions, bytesIterated *uint64,
+	file *manifest.FileMetadata, opts *IterOptions, internalOpts internalIterOpts,
 ) (internalIterator, keyspan.FragmentIterator, error) {
-	return c.tableCache.getShard(file.FileNum).newIters(file, opts, bytesIterated, &c.dbOpts)
+	return c.tableCache.getShard(file.FileNum).newIters(file, opts, internalOpts, &c.dbOpts)
 }
 
 func (c *tableCacheContainer) newRangeKeyIter(
@@ -299,8 +299,9 @@ type tableCacheShard struct {
 		sizeCold   int
 		sizeTest   int
 	}
-	releasing   sync.WaitGroup
-	releasingCh chan *tableCacheValue
+	releasing       sync.WaitGroup
+	releasingCh     chan *tableCacheValue
+	releaseLoopExit sync.WaitGroup
 }
 
 func (c *tableCacheShard) init(size int) {
@@ -309,6 +310,7 @@ func (c *tableCacheShard) init(size int) {
 	c.mu.nodes = make(map[tableCacheKey]*tableCacheNode)
 	c.mu.coldTarget = size
 	c.releasingCh = make(chan *tableCacheValue, 100)
+	c.releaseLoopExit.Add(1)
 	go c.releaseLoop()
 
 	if invariants.RaceEnabled {
@@ -318,6 +320,7 @@ func (c *tableCacheShard) init(size int) {
 
 func (c *tableCacheShard) releaseLoop() {
 	pprof.Do(context.Background(), tableCacheLabels, func(context.Context) {
+		defer c.releaseLoopExit.Done()
 		for v := range c.releasingCh {
 			v.release(c)
 		}
@@ -331,14 +334,15 @@ func (c *tableCacheShard) checkAndIntersectFilters(
 	v *tableCacheValue,
 	tableFilter func(userProps map[string]string) bool,
 	blockPropertyFilters []BlockPropertyFilter,
+	boundLimitedFilter sstable.BoundLimitedBlockPropertyFilter,
 ) (ok bool, filterer *sstable.BlockPropertiesFilterer, err error) {
 	if tableFilter != nil &&
 		!tableFilter(v.reader.Properties.UserProperties) {
 		return false, nil, nil
 	}
 
-	if len(blockPropertyFilters) > 0 {
-		filterer = sstable.NewBlockPropertiesFilterer(blockPropertyFilters)
+	if boundLimitedFilter != nil || len(blockPropertyFilters) > 0 {
+		filterer = sstable.NewBlockPropertiesFilterer(blockPropertyFilters, boundLimitedFilter)
 		intersects, err :=
 			filterer.IntersectsUserPropsAndFinishInit(v.reader.Properties.UserProperties)
 		if err != nil {
@@ -352,7 +356,10 @@ func (c *tableCacheShard) checkAndIntersectFilters(
 }
 
 func (c *tableCacheShard) newIters(
-	file *manifest.FileMetadata, opts *IterOptions, bytesIterated *uint64, dbOpts *tableCacheOpts,
+	file *manifest.FileMetadata,
+	opts *IterOptions,
+	internalOpts internalIterOpts,
+	dbOpts *tableCacheOpts,
 ) (internalIterator, keyspan.FragmentIterator, error) {
 	// Calling findNode gives us the responsibility of decrementing v's
 	// refCount. If opening the underlying table resulted in error, then we
@@ -369,7 +376,8 @@ func (c *tableCacheShard) newIters(
 	var filterer *sstable.BlockPropertiesFilterer
 	var err error
 	if opts != nil {
-		ok, filterer, err = c.checkAndIntersectFilters(v, opts.TableFilter, opts.PointKeyFilters)
+		ok, filterer, err = c.checkAndIntersectFilters(v, opts.TableFilter,
+			opts.PointKeyFilters, internalOpts.boundLimitedFilter)
 	}
 	if err != nil {
 		c.unrefValue(v)
@@ -405,11 +413,11 @@ func (c *tableCacheShard) newIters(
 	if opts != nil {
 		useFilter = manifest.LevelToInt(opts.level) != 6 || opts.UseL6Filters
 	}
-	if bytesIterated != nil {
-		iter, err = v.reader.NewCompactionIter(bytesIterated)
+	if internalOpts.bytesIterated != nil {
+		iter, err = v.reader.NewCompactionIter(internalOpts.bytesIterated)
 	} else {
 		iter, err = v.reader.NewIterWithBlockPropertyFilters(
-			opts.GetLowerBound(), opts.GetUpperBound(), filterer, useFilter)
+			opts.GetLowerBound(), opts.GetUpperBound(), filterer, useFilter, internalOpts.stats)
 	}
 	if err != nil {
 		if rangeDelIter != nil {
@@ -454,7 +462,7 @@ func (c *tableCacheShard) newRangeKeyIter(
 	// done here, rather than deferring to the block-property collector in order
 	// to maintain parity with point keys and the treatment of RANGEDELs.
 	if opts != nil && v.reader.Properties.NumRangeKeyDels == 0 {
-		ok, _, err = c.checkAndIntersectFilters(v, nil, opts.RangeKeyFilters)
+		ok, _, err = c.checkAndIntersectFilters(v, nil, opts.RangeKeyFilters, nil)
 	}
 	if err != nil {
 		c.unrefValue(v)
@@ -848,10 +856,14 @@ func (c *tableCacheShard) Close() error {
 	// complete. This behavior is used by iterator leak tests. Leaking the
 	// goroutine for these tests is less bad not closing the iterator which
 	// triggers other warnings about block cache handles not being released.
-	if err == nil {
-		close(c.releasingCh)
+	if err != nil {
+		c.releasing.Wait()
+		return err
 	}
+
+	close(c.releasingCh)
 	c.releasing.Wait()
+	c.releaseLoopExit.Wait()
 	return err
 }
 
