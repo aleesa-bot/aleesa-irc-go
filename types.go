@@ -37,13 +37,14 @@ type myConfig struct {
 
 // Входящее сообщение из pubsub-канала redis-ки
 type rMsg struct {
-	From    string `json:"from,omitempty"`
-	Chatid  string `json:"chatid,omitempty"`
-	Userid  string `json:"userid,omitempty"`
-	Message string `json:"message,omitempty"`
-	Plugin  string `json:"plugin,omitempty"`
-	Mode    string `json:"mode,omitempty"`
-	Misc    struct {
+	From     string `json:"from,omitempty"`
+	Chatid   string `json:"chatid,omitempty"`
+	Userid   string `json:"userid,omitempty"`
+	Threadid string `json:"threadid,omitempty"`
+	Message  string `json:"message,omitempty"`
+	Plugin   string `json:"plugin,omitempty"`
+	Mode     string `json:"mode,omitempty"`
+	Misc     struct {
 		Answer      int64  `json:"answer,omitempty"`
 		Botnick     string `json:"bot_nick,omitempty"`
 		Csign       string `json:"csign,omitempty"`
@@ -56,13 +57,14 @@ type rMsg struct {
 
 // Исходящее сообщение в pubsub-канал redis-ки
 type sMsg struct {
-	From    string `json:"from"`
-	Chatid  string `json:"chatid"`
-	Userid  string `json:"userid"`
-	Message string `json:"message"`
-	Plugin  string `json:"plugin"`
-	Mode    string `json:"mode"`
-	Misc    struct {
+	From     string `json:"from"`
+	Chatid   string `json:"chatid"`
+	Userid   string `json:"userid"`
+	Threadid string `json:"threadid"`
+	Message  string `json:"message"`
+	Plugin   string `json:"plugin"`
+	Mode     string `json:"mode"`
+	Misc     struct {
 		Answer      int64  `json:"answer"`
 		Botnick     string `json:"bot_nick"`
 		Csign       string `json:"csign"`

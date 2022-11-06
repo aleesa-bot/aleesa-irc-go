@@ -33,6 +33,7 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 		message.From = config.Redis.MyChannel
 		message.Userid = user    // как его видит сервер
 		message.Chatid = channel // чятик, в который написал user
+		message.Threadid = ""    // тредиков в irc нету, поэтому это поле отправляем пустым
 		message.Plugin = config.Redis.MyChannel
 		message.Mode = "public"
 		// Предполагается, что на команды бот автоматом отвечает
@@ -311,6 +312,7 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 		message.From = config.Redis.MyChannel
 		message.Userid = user    // как его видит сервер
 		message.Chatid = channel // чятик, в который написал user
+		message.Threadid = ""    // тредиков в irc нету, поэтому это поле отправляем пустым
 		message.Message = msg
 		message.Plugin = config.Redis.MyChannel
 		message.Mode = "public"
