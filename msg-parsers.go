@@ -182,10 +182,10 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 			// Общий список простых команд
 			cmds := []string{"ping", "пинг", "пинх", "pong", "понг", "понх", "coin", "монетка", "roll", "dice", "кости",
 				"ver", "version", "версия", "хэлп", "halp", "kde", "кде", "lat", "лат", "friday", "пятница", "proverb",
-				"пословица", "fortune", "фортунка", "f", "ф", "anek", "анек", "анекдот", "buni", "cat", "кис", "drink",
-				"праздник", "fox", "лис", "frog", "лягушка", "horse", "лошадь", "лошадка", "monkeyuser", "owl", "сова",
-				"сыч", "rabbit", "bunny", "кролик", "snail", "улитка", "xkcd", "dig", "копать", "fish", "fishing", "рыба",
-				"рыбка", "рыбалка", "karma", "карма"}
+				"пословица", "пословиться", "fortune", "фортунка", "f", "ф", "anek", "анек", "анекдот", "buni", "cat",
+				"кис", "drink", "праздник", "fox", "лис", "frog", "лягушка", "horse", "лошадь", "лошадка", "monkeyuser",
+				"owl", "сова", "сыч", "rabbit", "bunny", "кролик", "snail", "улитка", "xkcd", "dig", "копать", "fish",
+				"fishing", "рыба", "рыбка", "рыбалка", "karma", "карма"}
 
 			for _, command := range cmds {
 				if cmd == command {
