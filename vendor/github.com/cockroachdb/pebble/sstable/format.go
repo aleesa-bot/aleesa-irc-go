@@ -23,8 +23,10 @@ const (
 	TableFormatRocksDBv2
 	TableFormatPebblev1 // Block properties.
 	TableFormatPebblev2 // Range keys.
+	TableFormatPebblev3 // Value blocks.
+	TableFormatPebblev4 // Reserved.
 
-	TableFormatMax = TableFormatPebblev2
+	TableFormatMax = TableFormatPebblev4
 )
 
 // ParseTableFormat parses the given magic bytes and version into its
@@ -46,6 +48,10 @@ func ParseTableFormat(magic []byte, version uint32) (TableFormat, error) {
 			return TableFormatPebblev1, nil
 		case 2:
 			return TableFormatPebblev2, nil
+		case 3:
+			return TableFormatPebblev3, nil
+		case 4:
+			return TableFormatPebblev4, nil
 		default:
 			return TableFormatUnspecified, base.CorruptionErrorf(
 				"pebble/table: unsupported pebble format version %d", errors.Safe(version),
@@ -53,7 +59,7 @@ func ParseTableFormat(magic []byte, version uint32) (TableFormat, error) {
 		}
 	default:
 		return TableFormatUnspecified, base.CorruptionErrorf(
-			"pebble/table: invalid table (bad magic number)",
+			"pebble/table: invalid table (bad magic number: 0x%x)", magic,
 		)
 	}
 }
@@ -69,6 +75,10 @@ func (f TableFormat) AsTuple() (string, uint32) {
 		return pebbleDBMagic, 1
 	case TableFormatPebblev2:
 		return pebbleDBMagic, 2
+	case TableFormatPebblev3:
+		return pebbleDBMagic, 3
+	case TableFormatPebblev4:
+		return pebbleDBMagic, 4
 	default:
 		panic("sstable: unknown table format version tuple")
 	}
@@ -85,6 +95,10 @@ func (f TableFormat) String() string {
 		return "(Pebble,v1)"
 	case TableFormatPebblev2:
 		return "(Pebble,v2)"
+	case TableFormatPebblev3:
+		return "(Pebble,v3)"
+	case TableFormatPebblev4:
+		return "(Pebble,v4)"
 	default:
 		panic("sstable: unknown table format version tuple")
 	}

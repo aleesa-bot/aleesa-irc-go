@@ -117,6 +117,9 @@ type ReaderOptions struct {
 	// written with {Batch,DB}.Merge. The MergerName is checked for consistency
 	// with the value stored in the sstable when it was written.
 	MergerName string
+
+	// Logger is an optional logger and tracer.
+	LoggerAndTracer base.LoggerAndTracer
 }
 
 func (o ReaderOptions) ensureDefaults() ReaderOptions {
@@ -125,6 +128,9 @@ func (o ReaderOptions) ensureDefaults() ReaderOptions {
 	}
 	if o.MergerName == "" {
 		o.MergerName = base.DefaultMerger.Name
+	}
+	if o.LoggerAndTracer == nil {
+		o.LoggerAndTracer = base.NoopLoggerAndTracer{}
 	}
 	return o
 }
@@ -221,6 +227,14 @@ type WriterOptions struct {
 	// compress data blocks and write datablocks to disk in parallel with the
 	// Writer client goroutine.
 	Parallelism bool
+
+	// ShortAttributeExtractor mirrors
+	// Options.Experimental.ShortAttributeExtractor.
+	ShortAttributeExtractor base.ShortAttributeExtractor
+
+	// RequiredInPlaceValueBound mirrors
+	// Options.Experimental.RequiredInPlaceValueBound.
+	RequiredInPlaceValueBound UserKeyPrefixBound
 }
 
 func (o WriterOptions) ensureDefaults() WriterOptions {

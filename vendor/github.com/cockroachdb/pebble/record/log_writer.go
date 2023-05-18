@@ -133,7 +133,8 @@ func (q *syncQueue) load() (head, tail, realLength uint32) {
 	return head, tail, realLength
 }
 
-func (q *syncQueue) pop(head, tail uint32, err error) error {
+// REQUIRES: queueSemChan is non-nil.
+func (q *syncQueue) pop(head, tail uint32, err error, queueSemChan chan struct{}) error {
 	if tail == head {
 		// Queue is empty.
 		return nil
@@ -153,6 +154,10 @@ func (q *syncQueue) pop(head, tail uint32, err error) error {
 		// will try to enqueue before we've "freed" space in the queue.
 		atomic.AddUint64(&q.headTail, 1)
 		wg.Done()
+		// Is always non-nil in production.
+		if queueSemChan != nil {
+			<-queueSemChan
+		}
 	}
 
 	return nil
@@ -291,12 +296,20 @@ type LogWriter struct {
 	// used for min-sync-interval. In normal operation this points to
 	// time.AfterFunc.
 	afterFunc func(d time.Duration, f func()) syncTimer
+
+	// See the comment for LogWriterConfig.QueueSemChan.
+	queueSemChan chan struct{}
 }
 
 // LogWriterConfig is a struct used for configuring new LogWriters
 type LogWriterConfig struct {
 	WALMinSyncInterval durationFunc
 	WALFsyncLatency    prometheus.Histogram
+	// QueueSemChan is an optional channel to pop from when popping from
+	// LogWriter.flusher.syncQueue. It functions as a semaphore that prevents
+	// the syncQueue from overflowing (which will cause a panic). All production
+	// code ensures this is non-nil.
+	QueueSemChan chan struct{}
 }
 
 // CapAllocatedBlocks is the maximum number of blocks allocated by the
@@ -319,6 +332,7 @@ func NewLogWriter(w io.Writer, logNum base.FileNum, logWriterConfig LogWriterCon
 		afterFunc: func(d time.Duration, f func()) syncTimer {
 			return time.AfterFunc(d, f)
 		},
+		queueSemChan: logWriterConfig.QueueSemChan,
 	}
 	r.free.cond.L = &r.free.Mutex
 	r.free.blocks = make([]*block, 0, CapAllocatedBlocks)
@@ -441,7 +455,7 @@ func (w *LogWriter) flushLoop(context.Context) {
 		// If flusher has an error, we propagate it to waiters. Note in spite of
 		// error we consume the pending list above to free blocks for writers.
 		if f.err != nil {
-			f.syncQ.pop(head, tail, f.err)
+			f.syncQ.pop(head, tail, f.err, w.queueSemChan)
 			// Update the idleStartTime if work could not be done, so that we don't
 			// include the duration we tried to do work as idle. We don't bother
 			// with the rest of the accounting, which means we will undercount.
@@ -518,7 +532,7 @@ func (w *LogWriter) flushPending(
 			syncLatency, err = w.syncWithLatency()
 		}
 		f := &w.flusher
-		if popErr := f.syncQ.pop(head, tail, err); popErr != nil {
+		if popErr := f.syncQ.pop(head, tail, err, w.queueSemChan); popErr != nil {
 			return synced, syncLatency, bytesWritten, popErr
 		}
 	}
@@ -548,7 +562,7 @@ func (w *LogWriter) flushBlock(b *block) error {
 
 // queueBlock queues the current block for writing to the underlying writer,
 // allocates a new block and reserves space for the next header.
-func (w *LogWriter) queueBlock() {
+func (w *LogWriter) queueBlock() (waitDuration time.Duration) {
 	// Allocate a new block, blocking until one is available. We do this first
 	// because w.block is protected by w.flusher.Mutex.
 	w.free.Lock()
@@ -557,9 +571,11 @@ func (w *LogWriter) queueBlock() {
 			w.free.allocated++
 			w.free.blocks = append(w.free.blocks, &block{})
 		} else {
+			now := time.Now()
 			for len(w.free.blocks) == 0 {
 				w.free.cond.Wait()
 			}
+			waitDuration = time.Since(now)
 		}
 	}
 	nextBlock := w.free.blocks[len(w.free.blocks)-1]
@@ -575,6 +591,28 @@ func (w *LogWriter) queueBlock() {
 	f.Unlock()
 
 	w.blockNum++
+	return waitDuration
+}
+
+// ReserveAllFreeBlocksForTesting is used to only for testing.
+func (w *LogWriter) ReserveAllFreeBlocksForTesting() (releaseFunc func()) {
+	w.free.Lock()
+	defer w.free.Unlock()
+	free := w.free.blocks
+	w.free.blocks = nil
+	return func() {
+		w.free.Lock()
+		defer w.free.Unlock()
+		// It is possible that someone has pushed a free block and w.free.blocks
+		// is no longer nil. That is harmless. Also, the waiter loops on the
+		// condition len(w.free.blocks) == 0, so to actually unblock it we need to
+		// give it a free block.
+		if len(free) == 0 {
+			free = append(free, &block{})
+		}
+		w.free.blocks = free
+		w.free.cond.Broadcast()
+	}
 }
 
 // Close flushes and syncs any unwritten data and closes the writer.
@@ -626,7 +664,8 @@ func (w *LogWriter) Close() error {
 // of the record.
 // External synchronisation provided by commitPipeline.mu.
 func (w *LogWriter) WriteRecord(p []byte) (int64, error) {
-	return w.SyncRecord(p, nil, nil)
+	logSize, _, err := w.SyncRecord(p, nil, nil)
+	return logSize, err
 }
 
 // SyncRecord writes a complete record. If wg!= nil the record will be
@@ -634,9 +673,11 @@ func (w *LogWriter) WriteRecord(p []byte) (int64, error) {
 // the wait group upon completion. Returns the offset just past the end of the
 // record.
 // External synchronisation provided by commitPipeline.mu.
-func (w *LogWriter) SyncRecord(p []byte, wg *sync.WaitGroup, err *error) (int64, error) {
+func (w *LogWriter) SyncRecord(
+	p []byte, wg *sync.WaitGroup, err *error,
+) (logSize int64, waitDuration time.Duration, err2 error) {
 	if w.err != nil {
-		return -1, w.err
+		return -1, 0, w.err
 	}
 
 	// The `i == 0` condition ensures we handle empty records. Such records can
@@ -644,7 +685,9 @@ func (w *LogWriter) SyncRecord(p []byte, wg *sync.WaitGroup, err *error) (int64,
 	// MANIFEST is currently written using Writer, it is good to support the same
 	// semantics with LogWriter.
 	for i := 0; i == 0 || len(p) > 0; i++ {
-		p = w.emitFragment(i, p)
+		var wd time.Duration
+		p, wd = w.emitFragment(i, p)
+		waitDuration += wd
 	}
 
 	if wg != nil {
@@ -663,7 +706,7 @@ func (w *LogWriter) SyncRecord(p []byte, wg *sync.WaitGroup, err *error) (int64,
 	// race with our read. That's ok because the only error we could be seeing is
 	// one to syncing for which the caller can receive notification of by passing
 	// in a non-nil err argument.
-	return offset, nil
+	return offset, waitDuration, nil
 }
 
 // Size returns the current size of the file.
@@ -684,7 +727,7 @@ func (w *LogWriter) emitEOFTrailer() {
 	atomic.StoreInt32(&b.written, i+int32(recyclableHeaderSize))
 }
 
-func (w *LogWriter) emitFragment(n int, p []byte) []byte {
+func (w *LogWriter) emitFragment(n int, p []byte) (remainingP []byte, waitDuration time.Duration) {
 	b := w.block
 	i := b.written
 	first := n == 0
@@ -718,9 +761,9 @@ func (w *LogWriter) emitFragment(n int, p []byte) []byte {
 		for i := b.written; i < blockSize; i++ {
 			b.buf[i] = 0
 		}
-		w.queueBlock()
+		waitDuration = w.queueBlock()
 	}
-	return p[r:]
+	return p[r:], waitDuration
 }
 
 // Metrics must be called after Close. The callee will no longer modify the
