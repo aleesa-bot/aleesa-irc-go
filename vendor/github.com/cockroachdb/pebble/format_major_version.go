@@ -28,10 +28,13 @@ import (
 // FormatVersion that the default corresponds to may change with time.
 type FormatMajorVersion uint64
 
+// SafeValue implements redact.SafeValue.
+func (v FormatMajorVersion) SafeValue() {}
+
 // String implements fmt.Stringer.
 func (v FormatMajorVersion) String() string {
-	// NB: This must not change. It's used as the value for the the
-	// on-disk version marker file.
+	// NB: This must not change. It's used as the value for the on-disk
+	// version marker file.
 	//
 	// Specifically, this value must always parse as a base 10 integer
 	// that fits in a uint64. We format it as zero-padded, 3-digit
@@ -110,12 +113,12 @@ const (
 
 	// 23.1 versions.
 
-	// FormatUnusedPrePebblev1MarkedCompacted is an unused format major version.
+	// formatUnusedPrePebblev1MarkedCompacted is an unused format major version.
 	// This format major version was originally intended to ship in the 23.1
 	// release. It was later decided that this should be deferred until a
 	// subsequent release. The original ordering is preserved so as not to
 	// introduce breaking changes in Cockroach.
-	FormatUnusedPrePebblev1MarkedCompacted
+	formatUnusedPrePebblev1MarkedCompacted
 
 	// FormatSSTableValueBlocks is a format major version that adds support for
 	// storing values in value blocks in the sstable. Value block support is not
@@ -151,8 +154,28 @@ const (
 	// compactions for files marked for compaction are complete.
 	FormatPrePebblev1MarkedCompacted
 
+	// FormatDeleteSizedAndObsolete is a format major version that adds support
+	// for deletion tombstones that encode the size of the value they're
+	// expected to delete. This format major version is required before the
+	// associated key kind may be committed through batch applications or
+	// ingests. It also adds support for keys that are marked obsolete (see
+	// sstable/format.go for details).
+	FormatDeleteSizedAndObsolete
+
+	// FormatVirtualSSTables is a format major version that adds support for
+	// virtual sstables that can reference a sub-range of keys in an underlying
+	// physical sstable. This information is persisted through new,
+	// backward-incompatible fields in the Manifest, and therefore requires
+	// a format major version.
+	FormatVirtualSSTables
+
+	// internalFormatNewest holds the newest format major version, including
+	// experimental ones excluded from the exported FormatNewest constant until
+	// they've stabilized. Used in tests.
+	internalFormatNewest FormatMajorVersion = iota - 1
+
 	// FormatNewest always contains the most recent format major version.
-	FormatNewest FormatMajorVersion = iota - 1
+	FormatNewest FormatMajorVersion = internalFormatNewest
 )
 
 // MaxTableFormat returns the maximum sstable.TableFormat that can be used at
@@ -166,10 +189,12 @@ func (v FormatMajorVersion) MaxTableFormat() sstable.TableFormat {
 		FormatSplitUserKeysMarkedCompacted:
 		return sstable.TableFormatPebblev1
 	case FormatRangeKeys, FormatMinTableFormatPebblev1, FormatPrePebblev1Marked,
-		FormatUnusedPrePebblev1MarkedCompacted:
+		formatUnusedPrePebblev1MarkedCompacted:
 		return sstable.TableFormatPebblev2
 	case FormatSSTableValueBlocks, FormatFlushableIngest, FormatPrePebblev1MarkedCompacted:
 		return sstable.TableFormatPebblev3
+	case FormatDeleteSizedAndObsolete, FormatVirtualSSTables:
+		return sstable.TableFormatPebblev4
 	default:
 		panic(fmt.Sprintf("pebble: unsupported format major version: %s", v))
 	}
@@ -185,12 +210,25 @@ func (v FormatMajorVersion) MinTableFormat() sstable.TableFormat {
 		FormatRangeKeys:
 		return sstable.TableFormatLevelDB
 	case FormatMinTableFormatPebblev1, FormatPrePebblev1Marked,
-		FormatUnusedPrePebblev1MarkedCompacted, FormatSSTableValueBlocks,
-		FormatFlushableIngest, FormatPrePebblev1MarkedCompacted:
+		formatUnusedPrePebblev1MarkedCompacted, FormatSSTableValueBlocks,
+		FormatFlushableIngest, FormatPrePebblev1MarkedCompacted,
+		FormatDeleteSizedAndObsolete, FormatVirtualSSTables:
 		return sstable.TableFormatPebblev1
 	default:
 		panic(fmt.Sprintf("pebble: unsupported format major version: %s", v))
 	}
+}
+
+// orderingInvariants returns an enum encoding the set of invariants that must
+// hold within the receiver format major version. Invariants only get stricter
+// as the format major version advances, so it is okay to retrieve the
+// invariants from the current format major version and by the time the
+// invariants are enforced, the format major version has advanced.
+func (v FormatMajorVersion) orderingInvariants() manifest.OrderingInvariants {
+	if v < FormatSplitUserKeysMarkedCompacted {
+		return manifest.AllowSplitUserKeys
+	}
+	return manifest.ProhibitSplitUserKeys
 }
 
 // formatMajorVersionMigrations defines the migrations from one format
@@ -300,9 +338,9 @@ var formatMajorVersionMigrations = map[FormatMajorVersion]func(*DB) error{
 		}
 		return d.finalizeFormatVersUpgrade(FormatPrePebblev1Marked)
 	},
-	FormatUnusedPrePebblev1MarkedCompacted: func(d *DB) error {
+	formatUnusedPrePebblev1MarkedCompacted: func(d *DB) error {
 		// Intentional no-op.
-		return d.finalizeFormatVersUpgrade(FormatUnusedPrePebblev1MarkedCompacted)
+		return d.finalizeFormatVersUpgrade(formatUnusedPrePebblev1MarkedCompacted)
 	},
 	FormatSSTableValueBlocks: func(d *DB) error {
 		return d.finalizeFormatVersUpgrade(FormatSSTableValueBlocks)
@@ -318,6 +356,12 @@ var formatMajorVersionMigrations = map[FormatMajorVersion]func(*DB) error{
 			return err
 		}
 		return d.finalizeFormatVersUpgrade(FormatPrePebblev1MarkedCompacted)
+	},
+	FormatDeleteSizedAndObsolete: func(d *DB) error {
+		return d.finalizeFormatVersUpgrade(FormatDeleteSizedAndObsolete)
+	},
+	FormatVirtualSSTables: func(d *DB) error {
+		return d.finalizeFormatVersUpgrade(FormatVirtualSSTables)
 	},
 }
 
@@ -341,7 +385,7 @@ func lookupFormatMajorVersion(
 	if vers == FormatDefault {
 		return 0, nil, errors.Newf("pebble: default format major version should not persisted", vers)
 	}
-	if vers > FormatNewest {
+	if vers > internalFormatNewest {
 		return 0, nil, errors.Newf("pebble: database %q written in format major version %d", dirname, vers)
 	}
 	return vers, m, nil
@@ -352,9 +396,7 @@ func lookupFormatMajorVersion(
 // provided in Options when the database was opened if the existing
 // database was written with a higher format version.
 func (d *DB) FormatMajorVersion() FormatMajorVersion {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.mu.formatVers.vers
+	return FormatMajorVersion(d.mu.formatVers.vers.Load())
 }
 
 // RatchetFormatMajorVersion ratchets the opened database's format major
@@ -377,13 +419,13 @@ func (d *DB) ratchetFormatMajorVersionLocked(formatVers FormatMajorVersion) erro
 	if d.opts.ReadOnly {
 		return ErrReadOnly
 	}
-	if formatVers > FormatNewest {
-		// Guard against accidentally forgetting to update FormatNewest.
+	if formatVers > internalFormatNewest {
+		// Guard against accidentally forgetting to update internalFormatNewest.
 		return errors.Errorf("pebble: unknown format version %d", formatVers)
 	}
-	if d.mu.formatVers.vers > formatVers {
+	if currentVers := d.FormatMajorVersion(); currentVers > formatVers {
 		return errors.Newf("pebble: database already at format major version %d; cannot reduce to %d",
-			d.mu.formatVers.vers, formatVers)
+			currentVers, formatVers)
 	}
 	if d.mu.formatVers.ratcheting {
 		return errors.Newf("pebble: database format major version upgrade is in-progress")
@@ -391,7 +433,7 @@ func (d *DB) ratchetFormatMajorVersionLocked(formatVers FormatMajorVersion) erro
 	d.mu.formatVers.ratcheting = true
 	defer func() { d.mu.formatVers.ratcheting = false }()
 
-	for nextVers := d.mu.formatVers.vers + 1; nextVers <= formatVers; nextVers++ {
+	for nextVers := d.FormatMajorVersion() + 1; nextVers <= formatVers; nextVers++ {
 		if err := formatMajorVersionMigrations[nextVers](d); err != nil {
 			return errors.Wrapf(err, "migrating to version %d", nextVers)
 		}
@@ -402,7 +444,7 @@ func (d *DB) ratchetFormatMajorVersionLocked(formatVers FormatMajorVersion) erro
 		// update in-memory state (without ever dropping locks) after
 		// the upgrade is finalized. Here we assert that the upgrade
 		// did occur.
-		if d.mu.formatVers.vers != nextVers {
+		if d.FormatMajorVersion() != nextVers {
 			d.opts.Logger.Fatalf("pebble: successful migration to format version %d never finalized the upgrade", nextVers)
 		}
 	}
@@ -421,7 +463,7 @@ func (d *DB) finalizeFormatVersUpgrade(formatVers FormatMajorVersion) error {
 	if err := d.mu.formatVers.marker.Move(formatVers.String()); err != nil {
 		return err
 	}
-	d.mu.formatVers.vers = formatVers
+	d.mu.formatVers.vers.Store(uint64(formatVers))
 	d.opts.EventListener.FormatUpgrade(formatVers)
 	return nil
 }

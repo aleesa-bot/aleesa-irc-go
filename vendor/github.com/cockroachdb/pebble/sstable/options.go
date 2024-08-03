@@ -5,6 +5,7 @@
 package sstable
 
 import (
+	"github.com/cockroachdb/fifo"
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/cache"
 )
@@ -20,6 +21,17 @@ const (
 	ZstdCompression
 	NCompression
 )
+
+var ignoredInternalProperties = map[string]struct{}{
+	"rocksdb.column.family.id":             {},
+	"rocksdb.fixed.key.length":             {},
+	"rocksdb.index.key.is.user.key":        {},
+	"rocksdb.index.value.is.delta.encoded": {},
+	"rocksdb.oldest.key.time":              {},
+	"rocksdb.creation.time":                {},
+	"rocksdb.file.creation.time":           {},
+	"rocksdb.format.version":               {},
+}
 
 func (c Compression) String() string {
 	switch c {
@@ -100,12 +112,23 @@ type ReaderOptions struct {
 	// The default cache size is a zero-size cache.
 	Cache *cache.Cache
 
+	// LoadBlockSema, if set, is used to limit the number of blocks that can be
+	// loaded (i.e. read from the filesystem) in parallel. Each load acquires one
+	// unit from the semaphore for the duration of the read.
+	LoadBlockSema *fifo.Semaphore
+
+	// User properties specified in this map will not be added to sst.Properties.UserProperties.
+	DeniedUserProperties map[string]struct{}
+
 	// Comparer defines a total ordering over the space of []byte keys: a 'less
 	// than' relationship. The same comparison algorithm must be used for reads
 	// and writes over the lifetime of the DB.
 	//
 	// The default value uses the same ordering as bytes.Compare.
 	Comparer *Comparer
+
+	// Merge defines the Merge function in use for this keyspace.
+	Merge base.Merge
 
 	// Filters is a map from filter policy name to filter policy. It is used for
 	// debugging tools which may be used on multiple databases configured with
@@ -126,11 +149,17 @@ func (o ReaderOptions) ensureDefaults() ReaderOptions {
 	if o.Comparer == nil {
 		o.Comparer = base.DefaultComparer
 	}
+	if o.Merge == nil {
+		o.Merge = base.DefaultMerger.Merge
+	}
 	if o.MergerName == "" {
 		o.MergerName = base.DefaultMerger.Name
 	}
 	if o.LoggerAndTracer == nil {
 		o.LoggerAndTracer = base.NoopLoggerAndTracer{}
+	}
+	if o.DeniedUserProperties == nil {
+		o.DeniedUserProperties = ignoredInternalProperties
 	}
 	return o
 }
@@ -209,6 +238,17 @@ type WriterOptions struct {
 	// TableFormatLevelDB to create LevelDB compatible sstable which can be used
 	// by a wider range of tools and libraries.
 	TableFormat TableFormat
+
+	// IsStrictObsolete is only relevant for >= TableFormatPebblev4. See comment
+	// in format.go. Must be false if format < TableFormatPebblev4.
+	//
+	// TODO(bilal): set this when writing shared ssts.
+	IsStrictObsolete bool
+
+	// WritingToLowestLevel is only relevant for >= TableFormatPebblev4. It is
+	// used to set the obsolete bit on DEL/DELSIZED/SINGLEDEL if they are the
+	// youngest for a userkey.
+	WritingToLowestLevel bool
 
 	// TablePropertyCollectors is a list of TablePropertyCollector creation
 	// functions. A new TablePropertyCollector is created for each sstable built

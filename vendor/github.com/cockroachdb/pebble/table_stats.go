@@ -126,7 +126,7 @@ func (d *DB) collectTableStats() bool {
 	maybeCompact := false
 	for _, c := range collected {
 		c.fileMetadata.Stats = c.TableStats
-		maybeCompact = maybeCompact || c.TableStats.RangeDeletionsBytesEstimate > 0
+		maybeCompact = maybeCompact || fileCompensation(c.fileMetadata) > 0
 		c.fileMetadata.StatsMarkValid()
 	}
 	d.mu.tableStats.cond.Broadcast()
@@ -188,7 +188,7 @@ func (d *DB) loadNewFileStats(
 
 		stats, newHints, err := d.loadTableStats(
 			rs.current, nf.Level,
-			nf.Meta.PhysicalMeta(),
+			nf.Meta,
 		)
 		if err != nil {
 			d.opts.EventListener.BackgroundError(err)
@@ -237,7 +237,7 @@ func (d *DB) scanReadStateTableStats(
 			}
 
 			stats, newHints, err := d.loadTableStats(
-				rs.current, l, f.PhysicalMeta(),
+				rs.current, l, f,
 			)
 			if err != nil {
 				// Set `moreRemain` so we'll try again.
@@ -255,25 +255,22 @@ func (d *DB) scanReadStateTableStats(
 	return fill, hints, moreRemain
 }
 
-// loadTableStats currently only supports stats collection for physical
-// sstables.
-//
-// TODO(bananabrick): Support stats collection for virtual sstables.
 func (d *DB) loadTableStats(
-	v *version, level int, meta physicalMeta,
+	v *version, level int, meta *fileMetadata,
 ) (manifest.TableStats, []deleteCompactionHint, error) {
 	var stats manifest.TableStats
 	var compactionHints []deleteCompactionHint
-	err := d.tableCache.withReader(
-		meta, func(r *sstable.Reader) (err error) {
-			stats.NumEntries = r.Properties.NumEntries
-			stats.NumDeletions = r.Properties.NumDeletions
-			if r.Properties.NumPointDeletions() > 0 {
-				if err = d.loadTablePointKeyStats(r, v, level, meta, &stats); err != nil {
+	err := d.tableCache.withCommonReader(
+		meta, func(r sstable.CommonReader) (err error) {
+			props := r.CommonProperties()
+			stats.NumEntries = props.NumEntries
+			stats.NumDeletions = props.NumDeletions
+			if props.NumPointDeletions() > 0 {
+				if err = d.loadTablePointKeyStats(props, v, level, meta, &stats); err != nil {
 					return
 				}
 			}
-			if r.Properties.NumRangeDeletions > 0 || r.Properties.NumRangeKeyDels > 0 {
+			if props.NumRangeDeletions > 0 || props.NumRangeKeyDels > 0 {
 				if compactionHints, err = d.loadTableRangeDelStats(
 					r, v, level, meta, &stats,
 				); err != nil {
@@ -283,8 +280,8 @@ func (d *DB) loadTableStats(
 			// TODO(travers): Once we have real-world data, consider collecting
 			// additional stats that may provide improved heuristics for compaction
 			// picking.
-			stats.NumRangeKeySets = r.Properties.NumRangeKeySets
-			stats.ValueBlocksSize = r.Properties.ValueBlocksSize
+			stats.NumRangeKeySets = props.NumRangeKeySets
+			stats.ValueBlocksSize = props.ValueBlocksSize
 			return
 		})
 	if err != nil {
@@ -296,7 +293,11 @@ func (d *DB) loadTableStats(
 // loadTablePointKeyStats calculates the point key statistics for the given
 // table. The provided manifest.TableStats are updated.
 func (d *DB) loadTablePointKeyStats(
-	r *sstable.Reader, v *version, level int, meta physicalMeta, stats *manifest.TableStats,
+	props *sstable.CommonProperties,
+	v *version,
+	level int,
+	meta *fileMetadata,
+	stats *manifest.TableStats,
 ) error {
 	// TODO(jackson): If the file has a wide keyspace, the average
 	// value size beneath the entire file might not be representative
@@ -304,21 +305,21 @@ func (d *DB) loadTablePointKeyStats(
 	// We could write the ranges of 'clusters' of point tombstones to
 	// a sstable property and call averageValueSizeBeneath for each of
 	// these narrower ranges to improve the estimate.
-	avgValSize, err := d.averagePhysicalValueSizeBeneath(v, level, meta)
+	avgValLogicalSize, compressionRatio, err := d.estimateSizesBeneath(v, level, meta, props)
 	if err != nil {
 		return err
 	}
 	stats.PointDeletionsBytesEstimate =
-		pointDeletionsBytesEstimate(meta.Size, &r.Properties, avgValSize)
+		pointDeletionsBytesEstimate(meta.Size, props, avgValLogicalSize, compressionRatio)
 	return nil
 }
 
 // loadTableRangeDelStats calculates the range deletion and range key deletion
 // statistics for the given table.
 func (d *DB) loadTableRangeDelStats(
-	r *sstable.Reader, v *version, level int, meta physicalMeta, stats *manifest.TableStats,
+	r sstable.CommonReader, v *version, level int, meta *fileMetadata, stats *manifest.TableStats,
 ) ([]deleteCompactionHint, error) {
-	iter, err := newCombinedDeletionKeyspanIter(d.opts.Comparer, r, meta.FileMetadata)
+	iter, err := newCombinedDeletionKeyspanIter(d.opts.Comparer, r, meta)
 	if err != nil {
 		return nil, err
 	}
@@ -407,7 +408,7 @@ func (d *DB) loadTableRangeDelStats(
 			hintType:                hintType,
 			start:                   make([]byte, len(start)),
 			end:                     make([]byte, len(end)),
-			tombstoneFile:           meta.FileMetadata,
+			tombstoneFile:           meta,
 			tombstoneLevel:          level,
 			tombstoneLargestSeqNum:  s.LargestSeqNum(),
 			tombstoneSmallestSeqNum: s.SmallestSeqNum(),
@@ -420,51 +421,60 @@ func (d *DB) loadTableRangeDelStats(
 	return compactionHints, err
 }
 
-func (d *DB) averagePhysicalValueSizeBeneath(
-	v *version, level int, meta physicalMeta,
-) (avgValueSize uint64, err error) {
+func (d *DB) estimateSizesBeneath(
+	v *version, level int, meta *fileMetadata, fileProps *sstable.CommonProperties,
+) (avgValueLogicalSize, compressionRatio float64, err error) {
 	// Find all files in lower levels that overlap with meta,
 	// summing their value sizes and entry counts.
+	file := meta
 	var fileSum, keySum, valSum, entryCount uint64
+	// Include the file itself. This is important because in some instances, the
+	// computed compression ratio is applied to the tombstones contained within
+	// `meta` itself. If there are no files beneath `meta` in the LSM, we would
+	// calculate a compression ratio of 0 which is not accurate for the file's
+	// own tombstones.
+	fileSum += file.Size
+	entryCount += fileProps.NumEntries
+	keySum += fileProps.RawKeySize
+	valSum += fileProps.RawValueSize
+
+	addPhysicalTableStats := func(r *sstable.Reader) (err error) {
+		fileSum += file.Size
+		entryCount += r.Properties.NumEntries
+		keySum += r.Properties.RawKeySize
+		valSum += r.Properties.RawValueSize
+		return nil
+	}
+	addVirtualTableStats := func(v sstable.VirtualReader) (err error) {
+		fileSum += file.Size
+		entryCount += file.Stats.NumEntries
+		keySum += v.Properties.RawKeySize
+		valSum += v.Properties.RawValueSize
+		return nil
+	}
+
 	for l := level + 1; l < numLevels; l++ {
 		overlaps := v.Overlaps(l, d.cmp, meta.Smallest.UserKey,
 			meta.Largest.UserKey, meta.Largest.IsExclusiveSentinel())
 		iter := overlaps.Iter()
-		for file := iter.First(); file != nil; file = iter.Next() {
+		for file = iter.First(); file != nil; file = iter.Next() {
 			var err error
 			if file.Virtual {
-				err = d.tableCache.withVirtualReader(
-					file.VirtualMeta(),
-					func(v sstable.VirtualReader) (err error) {
-						fileSum += file.Size
-						entryCount += file.Stats.NumEntries
-						keySum += v.Properties.RawKeySize
-						valSum += v.Properties.RawValueSize
-						return nil
-					})
+				err = d.tableCache.withVirtualReader(file.VirtualMeta(), addVirtualTableStats)
 			} else {
-				err = d.tableCache.withReader(
-					file.PhysicalMeta(),
-					func(r *sstable.Reader) (err error) {
-						fileSum += file.Size
-						entryCount += r.Properties.NumEntries
-						keySum += r.Properties.RawKeySize
-						valSum += r.Properties.RawValueSize
-						return nil
-					})
+				err = d.tableCache.withReader(file.PhysicalMeta(), addPhysicalTableStats)
 			}
-
 			if err != nil {
-				return 0, err
+				return 0, 0, err
 			}
 		}
 	}
 	if entryCount == 0 {
-		return 0, nil
+		return 0, 0, nil
 	}
-	// RawKeySize and RawValueSize are uncompressed totals. Scale the value sum
-	// according to the data size to account for compression, index blocks and
-	// metadata overhead. Eg:
+	// RawKeySize and RawValueSize are uncompressed totals. We'll need to scale
+	// the value sum according to the data size to account for compression,
+	// index blocks and metadata overhead. Eg:
 	//
 	//    Compression rate        ×  Average uncompressed value size
 	//
@@ -473,10 +483,14 @@ func (d *DB) averagePhysicalValueSizeBeneath(
 	//         FileSize              RawValueSize
 	//   -----------------------  ×  ------------
 	//   RawKeySize+RawValueSize     NumEntries
+	//
+	// We return the average logical value size plus the compression ratio,
+	// leaving the scaling to the caller. This allows the caller to perform
+	// additional compression ratio scaling if necessary.
 	uncompressedSum := float64(keySum + valSum)
-	compressionRatio := float64(fileSum) / uncompressedSum
-	avgCompressedValueSize := (float64(valSum) / float64(entryCount)) * compressionRatio
-	return uint64(avgCompressedValueSize), nil
+	compressionRatio = float64(fileSum) / uncompressedSum
+	avgValueLogicalSize = (float64(valSum) / float64(entryCount))
+	return avgValueLogicalSize, compressionRatio, nil
 }
 
 func (d *DB) estimateReclaimedSizeBeneath(
@@ -593,12 +607,12 @@ func maybeSetStatsFromProperties(meta physicalMeta, props *sstable.Properties) b
 		return false
 	}
 
-	// If a table is more than 10% point deletions, don't calculate the
-	// PointDeletionsBytesEstimate statistic using our limited knowledge. The
-	// table stats collector can populate the stats and calculate an average
-	// of value size of all the tables beneath the table in the LSM, which
-	// will be more accurate.
-	if props.NumDeletions > props.NumEntries/10 {
+	// If a table is more than 10% point deletions without user-provided size
+	// estimates, don't calculate the PointDeletionsBytesEstimate statistic
+	// using our limited knowledge. The table stats collector can populate the
+	// stats and calculate an average of value size of all the tables beneath
+	// the table in the LSM, which will be more accurate.
+	if unsizedDels := (props.NumDeletions - props.NumSizedDeletions); unsizedDels > props.NumEntries/10 {
 		return false
 	}
 
@@ -608,8 +622,9 @@ func maybeSetStatsFromProperties(meta physicalMeta, props *sstable.Properties) b
 		// doesn't require any additional IO and since the number of point
 		// deletions in the file is low, the error introduced by this crude
 		// estimate is expected to be small.
-		avgValSize := estimateValuePhysicalSize(meta.Size, props)
-		pointEstimate = pointDeletionsBytesEstimate(meta.Size, props, avgValSize)
+		commonProps := &props.CommonProperties
+		avgValSize, compressionRatio := estimatePhysicalSizes(meta.Size, commonProps)
+		pointEstimate = pointDeletionsBytesEstimate(meta.Size, commonProps, avgValSize, compressionRatio)
 	}
 
 	meta.Stats.NumEntries = props.NumEntries
@@ -623,7 +638,7 @@ func maybeSetStatsFromProperties(meta physicalMeta, props *sstable.Properties) b
 }
 
 func pointDeletionsBytesEstimate(
-	fileSize uint64, props *sstable.Properties, avgValPhysicalSize uint64,
+	fileSize uint64, props *sstable.CommonProperties, avgValLogicalSize, compressionRatio float64,
 ) (estimate uint64) {
 	if props.NumEntries == 0 {
 		return 0
@@ -639,43 +654,79 @@ func pointDeletionsBytesEstimate(
 	// If there are covered key(s), we also get to drop key and value bytes for
 	// each covered key.
 	//
-	// We estimate assuming that each point tombstone on average covers 1 key.
+	// Some point tombstones (DELSIZEDs) carry a user-provided estimate of the
+	// uncompressed size of entries that will be elided by fully compacting the
+	// tombstone. For these tombstones, there's no guesswork—we use the
+	// RawPointTombstoneValueSizeHint property which is the sum of all these
+	// tombstones' encoded values.
+	//
+	// For un-sized point tombstones (DELs), we estimate assuming that each
+	// point tombstone on average covers 1 key and using average value sizes.
 	// This is almost certainly an overestimate, but that's probably okay
 	// because point tombstones can slow range iterations even when they don't
-	// cover a key. It may be beneficial in the future to more accurately
-	// estimate which tombstones cover keys and which do not.
+	// cover a key.
+	//
+	// TODO(jackson): This logic doesn't directly incorporate fixed per-key
+	// overhead (8-byte trailer, plus at least 1 byte encoding the length of the
+	// key and 1 byte encoding the length of the value). This overhead is
+	// indirectly incorporated through the compression ratios, but that results
+	// in the overhead being smeared per key-byte and value-byte, rather than
+	// per-entry. This per-key fixed overhead can be nontrivial, especially for
+	// dense swaths of point tombstones. Give some thought as to whether we
+	// should directly include fixed per-key overhead in the calculations.
 
-	// Calculate the contribution of the key sizes: 1x for the point tombstone
-	// itself and 1x for the key that's expected to exist lower in the LSM.
-	var keysLogicalSize uint64
+	// Below, we calculate the tombstone contributions and the shadowed keys'
+	// contributions separately.
+	var tombstonesLogicalSize float64
+	var shadowedLogicalSize float64
+
+	// 1. Calculate the contribution of the tombstone keys themselves.
 	if props.RawPointTombstoneKeySize > 0 {
-		// This table has a RawPointTombstoneKeySize property, so we know the
-		// exact size of the logical, uncompressed bytes of the point tombstone
-		// keys.
-		keysLogicalSize = 2 * props.RawPointTombstoneKeySize
+		tombstonesLogicalSize += float64(props.RawPointTombstoneKeySize)
 	} else {
 		// This sstable predates the existence of the RawPointTombstoneKeySize
 		// property. We can use the average key size within the file itself and
 		// the count of point deletions to estimate the size.
-		keysLogicalSize = 2 * numPointDels * props.RawKeySize / props.NumEntries
+		tombstonesLogicalSize += float64(numPointDels * props.RawKeySize / props.NumEntries)
 	}
-	// Scale the logical key size by the logical:physical ratio of the file to
+
+	// 2. Calculate the contribution of the keys shadowed by tombstones.
+	//
+	// 2a. First account for keys shadowed by DELSIZED tombstones. THE DELSIZED
+	// tombstones encode the size of both the key and value of the shadowed KV
+	// entries. These sizes are aggregated into a sstable property.
+	shadowedLogicalSize += float64(props.RawPointTombstoneValueSize)
+
+	// 2b. Calculate the contribution of the KV entries shadowed by ordinary DEL
+	// keys.
+	numUnsizedDels := numPointDels - props.NumSizedDeletions
+	{
+		// The shadowed keys have the same exact user keys as the tombstones
+		// themselves, so we can use the `tombstonesLogicalSize` we computed
+		// earlier as an estimate. There's a complication that
+		// `tombstonesLogicalSize` may include DELSIZED keys we already
+		// accounted for.
+		shadowedLogicalSize += float64(tombstonesLogicalSize) / float64(numPointDels) * float64(numUnsizedDels)
+
+		// Calculate the contribution of the deleted values. The caller has
+		// already computed an average logical size (possibly computed across
+		// many sstables).
+		shadowedLogicalSize += float64(numUnsizedDels) * avgValLogicalSize
+	}
+
+	// Scale both tombstone and shadowed totals by logical:physical ratios to
 	// account for compression, metadata overhead, etc.
 	//
 	//      Physical             FileSize
 	//     -----------  = -----------------------
 	//      Logical       RawKeySize+RawValueSize
 	//
-	estimate += (keysLogicalSize * fileSize) / (props.RawKeySize + props.RawValueSize)
-
-	// Calculate the contribution of the deleted values. The caller has already
-	// computed an average physical size (possibly comptued across many
-	// sstables), so there's no need to scale it.
-	estimate += numPointDels * avgValPhysicalSize
-	return estimate
+	return uint64((tombstonesLogicalSize + shadowedLogicalSize) * compressionRatio)
 }
 
-func estimateValuePhysicalSize(fileSize uint64, props *sstable.Properties) (avgValSize uint64) {
+func estimatePhysicalSizes(
+	fileSize uint64, props *sstable.CommonProperties,
+) (avgValLogicalSize, compressionRatio float64) {
 	// RawKeySize and RawValueSize are uncompressed totals. Scale according to
 	// the data size to account for compression, index blocks and metadata
 	// overhead. Eg:
@@ -689,9 +740,9 @@ func estimateValuePhysicalSize(fileSize uint64, props *sstable.Properties) (avgV
 	//   RawKeySize+RawValueSize     NumEntries
 	//
 	uncompressedSum := props.RawKeySize + props.RawValueSize
-	compressionRatio := float64(fileSize) / float64(uncompressedSum)
-	avgCompressedValueSize := (float64(props.RawValueSize) / float64(props.NumEntries)) * compressionRatio
-	return uint64(avgCompressedValueSize)
+	compressionRatio = float64(fileSize) / float64(uncompressedSum)
+	avgValLogicalSize = (float64(props.RawValueSize) / float64(props.NumEntries))
+	return avgValLogicalSize, compressionRatio
 }
 
 // newCombinedDeletionKeyspanIter returns a keyspan.FragmentIterator that
@@ -747,7 +798,7 @@ func estimateValuePhysicalSize(fileSize uint64, props *sstable.Properties) (avgV
 // corresponding to the largest and smallest sequence numbers encountered across
 // the range deletes and range keys deletes that comprised the merged spans.
 func newCombinedDeletionKeyspanIter(
-	comparer *base.Comparer, r *sstable.Reader, m *fileMetadata,
+	comparer *base.Comparer, cr sstable.CommonReader, m *fileMetadata,
 ) (keyspan.FragmentIterator, error) {
 	// The range del iter and range key iter are each wrapped in their own
 	// defragmenting iter. For each iter, abutting spans can always be merged.
@@ -809,7 +860,7 @@ func newCombinedDeletionKeyspanIter(
 	})
 	mIter.Init(comparer.Compare, transform, new(keyspan.MergingBuffers))
 
-	iter, err := r.NewRawRangeDelIter()
+	iter, err := cr.NewRawRangeDelIter()
 	if err != nil {
 		return nil, err
 	}
@@ -821,12 +872,12 @@ func newCombinedDeletionKeyspanIter(
 		// See docs/range_deletions.md for why this is necessary.
 		iter = keyspan.Truncate(
 			comparer.Compare, iter, m.Smallest.UserKey, m.Largest.UserKey,
-			nil, nil, false, /* panicOnPartialOverlap */
+			nil, nil, false, /* panicOnUpperTruncate */
 		)
 		mIter.AddLevel(iter)
 	}
 
-	iter, err = r.NewRawRangeKeyIter()
+	iter, err = cr.NewRawRangeKeyIter()
 	if err != nil {
 		return nil, err
 	}
@@ -843,7 +894,7 @@ func newCombinedDeletionKeyspanIter(
 				out.Keys = append(out.Keys, k)
 			}
 			return len(out.Keys) > 0
-		})
+		}, comparer.Compare)
 		dIter := &keyspan.DefragmentingIter{}
 		dIter.Init(comparer, iter, equal, reducer, new(keyspan.DefragmentingBuffers))
 		iter = dIter

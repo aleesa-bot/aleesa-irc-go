@@ -6,6 +6,7 @@ package pebble
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -20,13 +21,14 @@ import (
 	"github.com/cockroachdb/pebble/internal/arenaskl"
 	"github.com/cockroachdb/pebble/internal/base"
 	"github.com/cockroachdb/pebble/internal/cache"
+	"github.com/cockroachdb/pebble/internal/constants"
 	"github.com/cockroachdb/pebble/internal/invariants"
 	"github.com/cockroachdb/pebble/internal/manifest"
 	"github.com/cockroachdb/pebble/internal/manual"
-	"github.com/cockroachdb/pebble/internal/rate"
 	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider"
 	"github.com/cockroachdb/pebble/record"
+	"github.com/cockroachdb/pebble/sstable"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -36,11 +38,23 @@ const (
 
 	// The max batch size is limited by the uint32 offsets stored in
 	// internal/batchskl.node, DeferredBatchOp, and flushableBatchEntry.
-	maxBatchSize = 4 << 30 // 4 GB
+	//
+	// We limit the size to MaxUint32 (just short of 4GB) so that the exclusive
+	// end of an allocation fits in uint32.
+	//
+	// On 32-bit systems, slices are naturally limited to MaxInt (just short of
+	// 2GB).
+	maxBatchSize = constants.MaxUint32OrInt
 
 	// The max memtable size is limited by the uint32 offsets stored in
 	// internal/arenaskl.node, DeferredBatchOp, and flushableBatchEntry.
-	maxMemTableSize = 4 << 30 // 4 GB
+	//
+	// We limit the size to MaxUint32 (just short of 4GB) so that the exclusive
+	// end of an allocation fits in uint32.
+	//
+	// On 32-bit systems, slices are naturally limited to MaxInt (just short of
+	// 2GB).
+	maxMemTableSize = constants.MaxUint32OrInt
 )
 
 // TableCacheSize can be used to determine the table
@@ -75,7 +89,7 @@ func Open(dirname string, opts *Options) (db *DB, _ error) {
 	// Open the database and WAL directories first.
 	walDirname, dataDir, walDir, err := prepareAndOpenDirs(dirname, opts)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, "error opening database at %q", dirname)
 	}
 	defer func() {
 		if db == nil {
@@ -159,7 +173,7 @@ func Open(dirname string, opts *Options) (db *DB, _ error) {
 		merge:               opts.Merger.Merge,
 		split:               opts.Comparer.Split,
 		abbreviatedKey:      opts.Comparer.AbbreviatedKey,
-		largeBatchThreshold: (opts.MemTableSize - int(memTableEmptySize)) / 2,
+		largeBatchThreshold: (opts.MemTableSize - uint64(memTableEmptySize)) / 2,
 		fileLock:            fileLock,
 		dataDir:             dataDir,
 		walDir:              walDir,
@@ -169,7 +183,6 @@ func Open(dirname string, opts *Options) (db *DB, _ error) {
 	}
 	d.mu.versions = &versionSet{}
 	d.diskAvailBytes.Store(math.MaxUint64)
-	d.mu.versions.diskAvailBytes = d.getDiskAvailableBytesCached
 
 	defer func() {
 		// If an error or panic occurs during open, attempt to release the manually
@@ -194,6 +207,9 @@ func Open(dirname string, opts *Options) (db *DB, _ error) {
 					t.arenaBuf = nil
 				}
 			}
+			if d.cleanupManager != nil {
+				d.cleanupManager.Close()
+			}
 			if d.objProvider != nil {
 				d.objProvider.Close()
 			}
@@ -209,24 +225,21 @@ func Open(dirname string, opts *Options) (db *DB, _ error) {
 		apply:         d.commitApply,
 		write:         d.commitWrite,
 	})
-	d.deletionLimiter = rate.NewLimiter(
-		rate.Limit(d.opts.Experimental.MinDeletionRate),
-		d.opts.Experimental.MinDeletionRate)
 	d.mu.nextJobID = 1
 	d.mu.mem.nextSize = opts.MemTableSize
 	if d.mu.mem.nextSize > initialMemTableSize {
 		d.mu.mem.nextSize = initialMemTableSize
 	}
-	d.mu.cleaner.cond.L = &d.mu.Mutex
 	d.mu.compact.cond.L = &d.mu.Mutex
 	d.mu.compact.inProgress = make(map[*compaction]struct{})
 	d.mu.compact.noOngoingFlushStartTime = time.Now()
 	d.mu.snapshots.init()
-	// logSeqNum is the next sequence number that will be assigned. Start
-	// assigning sequence numbers from base.SeqNumStart to leave room for reserved
-	// sequence numbers (see comments around SeqNumStart).
+	// logSeqNum is the next sequence number that will be assigned.
+	// Start assigning sequence numbers from base.SeqNumStart to leave
+	// room for reserved sequence numbers (see comments around
+	// SeqNumStart).
 	d.mu.versions.logSeqNum.Store(base.SeqNumStart)
-	d.mu.formatVers.vers = formatVersion
+	d.mu.formatVers.vers.Store(uint64(formatVersion))
 	d.mu.formatVers.marker = formatVersionMarker
 
 	d.timeNow = time.Now
@@ -238,7 +251,7 @@ func Open(dirname string, opts *Options) (db *DB, _ error) {
 	jobID := d.mu.nextJobID
 	d.mu.nextJobID++
 
-	setCurrent := setCurrentFunc(d.mu.formatVers.vers, manifestMarker, opts.FS, dirname, d.dataDir)
+	setCurrent := setCurrentFunc(d.FormatMajorVersion(), manifestMarker, opts.FS, dirname, d.dataDir)
 
 	if !manifestExists {
 		// DB does not exist.
@@ -247,7 +260,7 @@ func Open(dirname string, opts *Options) (db *DB, _ error) {
 		}
 
 		// Create the DB.
-		if err := d.mu.versions.create(jobID, dirname, opts, manifestMarker, setCurrent, &d.mu.Mutex); err != nil {
+		if err := d.mu.versions.create(jobID, dirname, opts, manifestMarker, setCurrent, d.FormatMajorVersion, &d.mu.Mutex); err != nil {
 			return nil, err
 		}
 	} else {
@@ -255,7 +268,7 @@ func Open(dirname string, opts *Options) (db *DB, _ error) {
 			return nil, errors.Wrapf(ErrDBAlreadyExists, "dirname=%q", dirname)
 		}
 		// Load the version set.
-		if err := d.mu.versions.load(dirname, opts, manifestFileNum.FileNum(), manifestMarker, setCurrent, &d.mu.Mutex); err != nil {
+		if err := d.mu.versions.load(dirname, opts, manifestFileNum.FileNum(), manifestMarker, setCurrent, d.FormatMajorVersion, &d.mu.Mutex); err != nil {
 			return nil, err
 		}
 		if opts.ErrorIfNotPristine {
@@ -297,12 +310,18 @@ func Open(dirname string, opts *Options) (db *DB, _ error) {
 		NoSyncOnClose:       opts.NoSyncOnClose,
 		BytesPerSync:        opts.BytesPerSync,
 	}
-	providerSettings.Shared.Storage = opts.Experimental.SharedStorage
+	providerSettings.Local.ReadaheadConfigFn = opts.Local.ReadaheadConfigFn
+	providerSettings.Remote.StorageFactory = opts.Experimental.RemoteStorage
+	providerSettings.Remote.CreateOnShared = opts.Experimental.CreateOnShared
+	providerSettings.Remote.CreateOnSharedLocator = opts.Experimental.CreateOnSharedLocator
+	providerSettings.Remote.CacheSizeBytes = opts.Experimental.SecondaryCacheSizeBytes
 
 	d.objProvider, err = objstorageprovider.Open(providerSettings)
 	if err != nil {
 		return nil, err
 	}
+
+	d.cleanupManager = openCleanupManager(opts, d.objProvider, d.onObsoleteTableDelete, d.getDeletionPacerInfo)
 
 	if manifestExists {
 		curVersion := d.mu.versions.currentVersion()
@@ -360,6 +379,15 @@ func Open(dirname string, opts *Options) (db *DB, _ error) {
 					return nil, err
 				}
 			}
+		}
+	}
+
+	// Ratchet d.mu.versions.nextFileNum ahead of all known objects in the
+	// objProvider. This avoids FileNum collisions with obsolete sstables.
+	objects := d.objProvider.List()
+	for _, obj := range objects {
+		if d.mu.versions.nextFileNum <= obj.DiskFileNum.FileNum() {
+			d.mu.versions.nextFileNum = obj.DiskFileNum.FileNum() + 1
 		}
 	}
 
@@ -462,7 +490,7 @@ func Open(dirname string, opts *Options) (db *DB, _ error) {
 	//
 	// We ratchet the version this far into Open so that migrations have a read
 	// state available.
-	if !d.opts.ReadOnly && opts.FormatMajorVersion > d.mu.formatVers.vers {
+	if !d.opts.ReadOnly && opts.FormatMajorVersion > d.FormatMajorVersion() {
 		if err := d.ratchetFormatMajorVersionLocked(opts.FormatMajorVersion); err != nil {
 			return nil, err
 		}
@@ -505,14 +533,14 @@ func Open(dirname string, opts *Options) (db *DB, _ error) {
 
 	if !d.opts.ReadOnly {
 		d.scanObsoleteFiles(ls)
-		d.deleteObsoleteFiles(jobID, true /* waitForOngoing */)
+		d.deleteObsoleteFiles(jobID)
 	} else {
 		// All the log files are obsolete.
 		d.mu.versions.metrics.WAL.Files = int64(len(logFiles))
 	}
 	d.mu.tableStats.cond.L = &d.mu.Mutex
 	d.mu.tableValidation.cond.L = &d.mu.Mutex
-	if !d.opts.ReadOnly && !d.opts.private.disableTableStats {
+	if !d.opts.ReadOnly {
 		d.maybeCollectTableStatsLocked()
 	}
 	d.calculateDiskAvailableBytes()
@@ -678,7 +706,14 @@ func (d *DB) replayWAL(
 		rr              = record.NewReader(file, logNum)
 		offset          int64 // byte offset in rr
 		lastFlushOffset int64
+		keysReplayed    int64 // number of keys replayed
+		batchesReplayed int64 // number of batches replayed
 	)
+
+	// TODO(jackson): This function is interspersed with panics, in addition to
+	// corruption error propagation. Audit them to ensure we're truly only
+	// panicking where the error points to Pebble bug and not user or
+	// hardware-induced corruption.
 
 	if d.opts.ReadOnly {
 		// In read-only mode, we replay directly into the mutable memtable which will
@@ -734,6 +769,11 @@ func (d *DB) replayWAL(
 		ve.NewFiles = append(ve.NewFiles, newVE.NewFiles...)
 		return nil
 	}
+	defer func() {
+		if err != nil {
+			err = errors.WithDetailf(err, "replaying log %s, offset %d", logNum, offset)
+		}
+	}()
 
 	for {
 		offset = rr.Offset()
@@ -766,14 +806,18 @@ func (d *DB) replayWAL(
 
 		// Specify Batch.db so that Batch.SetRepr will compute Batch.memTableSize
 		// which is used below.
-		b = Batch{db: d}
+		b = Batch{}
+		b.db = d
 		b.SetRepr(buf.Bytes())
 		seqNum := b.SeqNum()
 		maxSeqNum = seqNum + uint64(b.Count())
-
+		keysReplayed += int64(b.Count())
+		batchesReplayed++
 		{
 			br := b.Reader()
-			if kind, encodedFileNum, _, _ := br.Next(); kind == InternalKeyKindIngestSST {
+			if kind, encodedFileNum, _, ok, err := br.Next(); err != nil {
+				return nil, 0, err
+			} else if ok && kind == InternalKeyKindIngestSST {
 				fileNums := make([]base.DiskFileNum, 0, b.Count())
 				addFileNum := func(encodedFileNum []byte) {
 					fileNum, n := binary.Uvarint(encodedFileNum)
@@ -785,7 +829,10 @@ func (d *DB) replayWAL(
 				addFileNum(encodedFileNum)
 
 				for i := 1; i < int(b.Count()); i++ {
-					kind, encodedFileNum, _, ok := br.Next()
+					kind, encodedFileNum, _, ok, err := br.Next()
+					if err != nil {
+						return nil, 0, err
+					}
 					if kind != InternalKeyKindIngestSST {
 						panic("pebble: invalid batch key kind.")
 					}
@@ -795,21 +842,41 @@ func (d *DB) replayWAL(
 					addFileNum(encodedFileNum)
 				}
 
-				if _, _, _, ok := br.Next(); ok {
+				if _, _, _, ok, err := br.Next(); err != nil {
+					return nil, 0, err
+				} else if ok {
 					panic("pebble: invalid number of entries in batch.")
 				}
 
-				paths := make([]string, len(fileNums))
+				meta := make([]*fileMetadata, len(fileNums))
 				for i, n := range fileNums {
-					paths[i] = base.MakeFilepath(d.opts.FS, d.dirname, fileTypeTable, n)
-				}
+					var readable objstorage.Readable
+					objMeta, err := d.objProvider.Lookup(fileTypeTable, n)
+					if err != nil {
+						return nil, 0, errors.Wrap(err, "pebble: error when looking up ingested SSTs")
+					}
+					if objMeta.IsRemote() {
+						readable, err = d.objProvider.OpenForReading(context.TODO(), fileTypeTable, n, objstorage.OpenOptions{MustExist: true})
+						if err != nil {
+							return nil, 0, errors.Wrap(err, "pebble: error when opening flushable ingest files")
+						}
+					} else {
+						path := base.MakeFilepath(d.opts.FS, d.dirname, fileTypeTable, n)
+						f, err := d.opts.FS.Open(path)
+						if err != nil {
+							return nil, 0, err
+						}
 
-				var meta []*manifest.FileMetadata
-				meta, _, err = ingestLoad(
-					d.opts, d.mu.formatVers.vers, paths, d.cacheID, fileNums,
-				)
-				if err != nil {
-					return nil, 0, err
+						readable, err = sstable.NewSimpleReadable(f)
+						if err != nil {
+							return nil, 0, err
+						}
+					}
+					// NB: ingestLoad1 will close readable.
+					meta[i], err = ingestLoad1(d.opts, d.FormatMajorVersion(), readable, d.cacheID, n)
+					if err != nil {
+						return nil, 0, errors.Wrap(err, "pebble: error when loading flushable ingest files")
+					}
 				}
 
 				if uint32(len(meta)) != b.Count() {
@@ -870,11 +937,14 @@ func (d *DB) replayWAL(
 			// Make a copy of the data slice since it is currently owned by buf and will
 			// be reused in the next iteration.
 			b.data = append([]byte(nil), b.data...)
-			b.flushable = newFlushableBatch(&b, d.opts.Comparer)
+			b.flushable, err = newFlushableBatch(&b, d.opts.Comparer)
+			if err != nil {
+				return nil, 0, err
+			}
 			entry := d.newFlushableEntry(b.flushable, logNum, b.SeqNum())
 			// Disable memory accounting by adding a reader ref that will never be
 			// removed.
-			entry.readerRefs++
+			entry.readerRefs.Add(1)
 			if d.opts.ReadOnly {
 				d.mu.mem.queue = append(d.mu.mem.queue, entry)
 				// We added the flushable batch to the flushable to the queue.
@@ -912,7 +982,10 @@ func (d *DB) replayWAL(
 		}
 		buf.Reset()
 	}
+
+	d.opts.Logger.Infof("[JOB %d] WAL file %s with log number %s stopped reading at offset: %d; replayed %d keys in %d batches", jobID, filename, logNum.String(), offset, keysReplayed, batchesReplayed)
 	flushMem()
+
 	// mem is nil here.
 	if !d.opts.ReadOnly {
 		err = updateVE()
@@ -1064,6 +1137,12 @@ var ErrDBAlreadyExists = errors.New("pebble: database already exists")
 // Note that errors can be wrapped with more details; use errors.Is().
 var ErrDBNotPristine = errors.New("pebble: database already exists and is not pristine")
 
+// IsCorruptionError returns true if the given error indicates database
+// corruption.
+func IsCorruptionError(err error) bool {
+	return errors.Is(err, base.ErrCorruption)
+}
+
 func checkConsistency(v *manifest.Version, dirname string, objProvider objstorage.Provider) error {
 	var buf bytes.Buffer
 	var args []interface{}
@@ -1079,9 +1158,15 @@ func checkConsistency(v *manifest.Version, dirname string, objProvider objstorag
 			dedup[backingState.DiskFileNum] = struct{}{}
 			fileNum := backingState.DiskFileNum
 			fileSize := backingState.Size
+			// We allow foreign objects to have a mismatch between sizes. This is
+			// because we might skew the backing size stored by our objprovider
+			// to prevent us from over-prioritizing this file for compaction.
 			meta, err := objProvider.Lookup(base.FileTypeTable, fileNum)
 			var size int64
 			if err == nil {
+				if objProvider.IsSharedForeign(meta) {
+					continue
+				}
 				size, err = objProvider.Size(meta)
 			}
 			if err != nil {

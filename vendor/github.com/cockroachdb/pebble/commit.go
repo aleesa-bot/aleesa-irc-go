@@ -9,7 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"github.com/cockroachdb/pebble/record"
 )
@@ -39,7 +38,7 @@ type commitQueue struct {
 	// power of 2. A slot is in use until *both* the tail index has moved beyond
 	// it and the slot value has been set to nil. The slot value is set to nil
 	// atomically by the consumer and read atomically by the producer.
-	slots [record.SyncConcurrency]unsafe.Pointer
+	slots [record.SyncConcurrency]atomic.Pointer[Batch]
 }
 
 const dequeueBits = 32
@@ -67,8 +66,8 @@ func (q *commitQueue) enqueue(b *Batch) {
 	}
 	slot := &q.slots[head&uint32(len(q.slots)-1)]
 
-	// Check if the head slot has been released by dequeue.
-	for atomic.LoadPointer(slot) != nil {
+	// Check if the head slot has been released by dequeueApplied.
+	for slot.Load() != nil {
 		// Another goroutine is still cleaning up the tail, so the queue is
 		// actually still full. We spin because this should resolve itself
 		// momentarily.
@@ -76,14 +75,18 @@ func (q *commitQueue) enqueue(b *Batch) {
 	}
 
 	// The head slot is free, so we own it.
-	atomic.StorePointer(slot, unsafe.Pointer(b))
+	slot.Store(b)
 
-	// Increment head. This passes ownership of slot to dequeue and acts as a
+	// Increment head. This passes ownership of slot to dequeueApplied and acts as a
 	// store barrier for writing the slot.
 	q.headTail.Add(1 << dequeueBits)
 }
 
-func (q *commitQueue) dequeue() *Batch {
+// dequeueApplied removes the earliest enqueued Batch, if it is applied.
+//
+// Returns nil if the commit queue is empty or the earliest Batch is not yet
+// applied.
+func (q *commitQueue) dequeueApplied() *Batch {
 	for {
 		ptrs := q.headTail.Load()
 		head, tail := q.unpack(ptrs)
@@ -93,7 +96,7 @@ func (q *commitQueue) dequeue() *Batch {
 		}
 
 		slot := &q.slots[tail&uint32(len(q.slots)-1)]
-		b := (*Batch)(atomic.LoadPointer(slot))
+		b := slot.Load()
 		if b == nil || !b.applied.Load() {
 			// The batch is not ready to be dequeued, or another goroutine has
 			// already dequeued it.
@@ -109,7 +112,7 @@ func (q *commitQueue) dequeue() *Batch {
 			// Tell enqueue that we're done with this slot. Zeroing the slot is also
 			// important so we don't leave behind references that could keep this object
 			// live longer than necessary.
-			atomic.StorePointer(slot, nil)
+			slot.Store(nil)
 			// At this point enqueue owns the slot.
 			return b
 		}
@@ -239,6 +242,7 @@ type commitPipeline struct {
 	// logSyncQSem are used for this reservation.
 	commitQueueSem chan struct{}
 	logSyncQSem    chan struct{}
+	ingestSem      chan struct{}
 	// The mutex to use for synchronizing access to logSeqNum and serializing
 	// calls to commitEnv.write().
 	mu sync.Mutex
@@ -263,6 +267,7 @@ func newCommitPipeline(env commitEnv) *commitPipeline {
 		// and sync the WAL.
 		commitQueueSem: make(chan struct{}, record.SyncConcurrency-1),
 		logSyncQSem:    make(chan struct{}, record.SyncConcurrency-1),
+		ingestSem:      make(chan struct{}, 1),
 	}
 	return p
 }
@@ -471,13 +476,13 @@ func (p *commitPipeline) publish(b *Batch) {
 
 	// Loop dequeuing applied batches from the pending queue. If our batch was
 	// the head of the pending queue we are guaranteed that either we'll publish
-	// it or someone else will dequeue and publish it. If our batch is not the
-	// head of the queue then either we'll dequeue applied batches and reach our
+	// it or someone else will dequeueApplied and publish it. If our batch is not the
+	// head of the queue then either we'll dequeueApplied applied batches and reach our
 	// batch or there is an unapplied batch blocking us. When that unapplied
 	// batch applies it will go through the same process and publish our batch
 	// for us.
 	for {
-		t := p.pending.dequeue()
+		t := p.pending.dequeueApplied()
 		if t == nil {
 			// Wait for another goroutine to publish us. We might also be waiting for
 			// the WAL sync to finish.

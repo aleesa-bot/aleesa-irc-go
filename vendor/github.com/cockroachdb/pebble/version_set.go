@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"math"
 	"sync"
 	"sync/atomic"
 
@@ -61,12 +60,11 @@ type versionSet struct {
 	// Immutable fields.
 	dirname string
 	// Set to DB.mu.
-	mu             *sync.Mutex
-	opts           *Options
-	fs             vfs.FS
-	cmp            Compare
-	cmpName        string
-	diskAvailBytes func() uint64
+	mu      *sync.Mutex
+	opts    *Options
+	fs      vfs.FS
+	cmp     Compare
+	cmpName string
 	// Dynamic base level allows the dynamic base level computation to be
 	// disabled. Used by tests which want to create specific LSM structures.
 	dynamicBaseLevel bool
@@ -88,17 +86,21 @@ type versionSet struct {
 	// still referenced by an inuse iterator.
 	zombieTables map[base.DiskFileNum]uint64 // filenum -> size
 
-	// fileBackingMap is a map for the FileBacking which is supporting virtual
-	// sstables in the latest version. Once the file backing is backing no
-	// virtual sstables in the latest version, it is removed from this map and
-	// the corresponding state is added to the zombieTables map. Note that we
-	// don't keep track of file backing which supports a virtual sstable
-	// which is not in the latest version.
-	//
-	// fileBackingMap is protected by the versionSet.logLock. It's populated
+	// backingState is protected by the versionSet.logLock. It's populated
 	// during Open in versionSet.load, but it's not used concurrently during
 	// load.
-	fileBackingMap map[base.DiskFileNum]*fileBacking
+	backingState struct {
+		// fileBackingMap is a map for the FileBacking which is supporting virtual
+		// sstables in the latest version. Once the file backing is backing no
+		// virtual sstables in the latest version, it is removed from this map and
+		// the corresponding state is added to the zombieTables map. Note that we
+		// don't keep track of file backing which supports a virtual sstable
+		// which is not in the latest version.
+		fileBackingMap map[base.DiskFileNum]*fileBacking
+		// fileBackingSize is the sum of the sizes of the fileBackings in the
+		// fileBackingMap.
+		fileBackingSize uint64
+	}
 
 	// minUnflushedLogNum is the smallest WAL log file number corresponding to
 	// mutations that have not been flushed to an sstable.
@@ -112,9 +114,10 @@ type versionSet struct {
 	manifestFileNum FileNum
 	manifestMarker  *atomicfs.Marker
 
-	manifestFile vfs.File
-	manifest     *record.Writer
-	setCurrent   func(FileNum) error
+	manifestFile          vfs.File
+	manifest              *record.Writer
+	setCurrent            func(FileNum) error
+	getFormatMajorVersion func() FormatMajorVersion
 
 	writing    bool
 	writerCond sync.Cond
@@ -127,6 +130,7 @@ func (vs *versionSet) init(
 	opts *Options,
 	marker *atomicfs.Marker,
 	setCurrent func(FileNum) error,
+	getFMV func() FormatMajorVersion,
 	mu *sync.Mutex,
 ) {
 	vs.dirname = dirname
@@ -140,13 +144,12 @@ func (vs *versionSet) init(
 	vs.versions.Init(mu)
 	vs.obsoleteFn = vs.addObsoleteLocked
 	vs.zombieTables = make(map[base.DiskFileNum]uint64)
-	vs.fileBackingMap = make(map[base.DiskFileNum]*fileBacking)
+	vs.backingState.fileBackingMap = make(map[base.DiskFileNum]*fileBacking)
+	vs.backingState.fileBackingSize = 0
 	vs.nextFileNum = 1
 	vs.manifestMarker = marker
 	vs.setCurrent = setCurrent
-	if vs.diskAvailBytes == nil {
-		vs.diskAvailBytes = func() uint64 { return math.MaxUint64 }
-	}
+	vs.getFormatMajorVersion = getFMV
 }
 
 // create creates a version set for a fresh DB.
@@ -156,15 +159,15 @@ func (vs *versionSet) create(
 	opts *Options,
 	marker *atomicfs.Marker,
 	setCurrent func(FileNum) error,
+	getFormatMajorVersion func() FormatMajorVersion,
 	mu *sync.Mutex,
 ) error {
-	vs.init(dirname, opts, marker, setCurrent, mu)
+	vs.init(dirname, opts, marker, setCurrent, getFormatMajorVersion, mu)
 	newVersion := &version{}
 	vs.append(newVersion)
 	var err error
 
-	vs.picker = newCompactionPicker(newVersion, vs.opts, nil, vs.metrics.levelSizes(), vs.diskAvailBytes)
-
+	vs.picker = newCompactionPicker(newVersion, vs.opts, nil)
 	// Note that a "snapshot" version edit is written to the manifest when it is
 	// created.
 	vs.manifestFileNum = vs.getNextFileNum()
@@ -205,9 +208,10 @@ func (vs *versionSet) load(
 	manifestFileNum FileNum,
 	marker *atomicfs.Marker,
 	setCurrent func(FileNum) error,
+	getFormatMajorVersion func() FormatMajorVersion,
 	mu *sync.Mutex,
 ) error {
-	vs.init(dirname, opts, marker, setCurrent, mu)
+	vs.init(dirname, opts, marker, setCurrent, getFormatMajorVersion, mu)
 
 	vs.manifestFileNum = manifestFileNum
 	manifestPath := base.MakeFilepath(opts.FS, dirname, fileTypeManifest, vs.manifestFileNum.DiskFileNum())
@@ -293,19 +297,20 @@ func (vs *versionSet) load(
 	}
 	vs.markFileNumUsed(vs.minUnflushedLogNum)
 
-	// Populate the fileBackingMap since we have finished version
-	// edit accumulation.
+	// Populate the fileBackingMap and the FileBacking for virtual sstables since
+	// we have finished version edit accumulation.
 	for _, s := range bve.AddedFileBacking {
-		vs.fileBackingMap[s.DiskFileNum] = s
+		vs.addFileBacking(s)
 	}
 
 	for _, fileNum := range bve.RemovedFileBacking {
-		delete(vs.fileBackingMap, fileNum)
+		vs.removeFileBacking(fileNum)
 	}
 
 	newVersion, err := bve.Apply(
 		nil, vs.cmp, opts.Comparer.FormatKey, opts.FlushSplitBytes,
 		opts.Experimental.ReadCompactionRate, nil, /* zombies */
+		getFormatMajorVersion().orderingInvariants(),
 	)
 	if err != nil {
 		return err
@@ -320,7 +325,7 @@ func (vs *versionSet) load(
 		l.Size = int64(files.SizeSum())
 	}
 
-	vs.picker = newCompactionPicker(newVersion, vs.opts, nil, vs.metrics.levelSizes(), vs.diskAvailBytes)
+	vs.picker = newCompactionPicker(newVersion, vs.opts, nil)
 	return nil
 }
 
@@ -361,6 +366,26 @@ func (vs *versionSet) logUnlock() {
 	}
 	vs.writing = false
 	vs.writerCond.Signal()
+}
+
+// Only call if the DiskFileNum doesn't exist in the fileBackingMap.
+func (vs *versionSet) addFileBacking(backing *manifest.FileBacking) {
+	_, ok := vs.backingState.fileBackingMap[backing.DiskFileNum]
+	if ok {
+		panic("pebble: trying to add an existing file backing")
+	}
+	vs.backingState.fileBackingMap[backing.DiskFileNum] = backing
+	vs.backingState.fileBackingSize += backing.Size
+}
+
+// Only call if the the DiskFileNum exists in the fileBackingMap.
+func (vs *versionSet) removeFileBacking(dfn base.DiskFileNum) {
+	backing, ok := vs.backingState.fileBackingMap[dfn]
+	if !ok {
+		panic("pebble: trying to remove an unknown file backing")
+	}
+	delete(vs.backingState.fileBackingMap, dfn)
+	vs.backingState.fileBackingSize -= backing.Size
 }
 
 // logAndApply logs the version edit to the manifest, applies the version edit
@@ -420,6 +445,8 @@ func (vs *versionSet) logAndApply(
 	}
 
 	currentVersion := vs.currentVersion()
+	fmv := vs.getFormatMajorVersion()
+	orderingInvariants := fmv.orderingInvariants()
 	var newVersion *version
 
 	// Generate a new manifest if we don't currently have one, or forceRotation
@@ -490,10 +517,14 @@ func (vs *versionSet) logAndApply(
 		defer vs.mu.Lock()
 
 		var err error
+		if vs.getFormatMajorVersion() < FormatVirtualSSTables && len(ve.CreatedBackingTables) > 0 {
+			return errors.AssertionFailedf("MANIFEST cannot contain virtual sstable records due to format major version")
+		}
 		newVersion, zombies, err = manifest.AccumulateIncompleteAndApplySingleVE(
 			ve, currentVersion, vs.cmp, vs.opts.Comparer.FormatKey,
 			vs.opts.FlushSplitBytes, vs.opts.Experimental.ReadCompactionRate,
-			vs.fileBackingMap,
+			vs.backingState.fileBackingMap, vs.addFileBacking, vs.removeFileBacking,
+			orderingInvariants,
 		)
 		if err != nil {
 			return errors.Wrap(err, "MANIFEST apply failed")
@@ -516,7 +547,7 @@ func (vs *versionSet) logAndApply(
 			return errors.Wrap(err, "MANIFEST next record write failed")
 		}
 
-		// NB: Any error from this point on is considered fatal as we don't now if
+		// NB: Any error from this point on is considered fatal as we don't know if
 		// the MANIFEST write occurred or not. Trying to determine that is
 		// fraught. Instead we rely on the standard recovery mechanism run when a
 		// database is open. In particular, that mechanism generates a new MANIFEST
@@ -590,30 +621,46 @@ func (vs *versionSet) logAndApply(
 	}
 	for i := range vs.metrics.Levels {
 		l := &vs.metrics.Levels[i]
+		l.NumFiles = int64(newVersion.Levels[i].Len())
+		l.NumVirtualFiles = newVersion.Levels[i].NumVirtual
+		l.VirtualSize = newVersion.Levels[i].VirtualSize
+		l.Size = int64(newVersion.Levels[i].Size())
+
 		l.Sublevels = 0
 		if l.NumFiles > 0 {
 			l.Sublevels = 1
 		}
 		if invariants.Enabled {
-			if count := int64(newVersion.Levels[i].Len()); l.NumFiles != count {
-				vs.opts.Logger.Fatalf("versionSet metrics L%d NumFiles = %d, actual count = %d", i, l.NumFiles, count)
-			}
 			levelFiles := newVersion.Levels[i].Slice()
 			if size := int64(levelFiles.SizeSum()); l.Size != size {
 				vs.opts.Logger.Fatalf("versionSet metrics L%d Size = %d, actual size = %d", i, l.Size, size)
+			}
+			if nVirtual := levelFiles.NumVirtual(); nVirtual != l.NumVirtualFiles {
+				vs.opts.Logger.Fatalf(
+					"versionSet metrics L%d NumVirtual = %d, actual NumVirtual = %d",
+					i, l.NumVirtualFiles, nVirtual,
+				)
+			}
+			if vSize := levelFiles.VirtualSizeSum(); vSize != l.VirtualSize {
+				vs.opts.Logger.Fatalf(
+					"versionSet metrics L%d Virtual size = %d, actual size = %d",
+					i, l.VirtualSize, vSize,
+				)
 			}
 		}
 	}
 	vs.metrics.Levels[0].Sublevels = int32(len(newVersion.L0SublevelFiles))
 
-	vs.picker = newCompactionPicker(newVersion, vs.opts, inProgress, vs.metrics.levelSizes(), vs.diskAvailBytes)
+	vs.picker = newCompactionPicker(newVersion, vs.opts, inProgress)
 	if !vs.dynamicBaseLevel {
 		vs.picker.forceBaseLevel1()
 	}
 	return nil
 }
 
-func (vs *versionSet) incrementCompactions(kind compactionKind, extraLevels []*compactionLevel) {
+func (vs *versionSet) incrementCompactions(
+	kind compactionKind, extraLevels []*compactionLevel, pickerMetrics compactionPickerMetrics,
+) {
 	switch kind {
 	case compactionKindDefault:
 		vs.metrics.Compact.Count++
@@ -688,7 +735,6 @@ func (vs *versionSet) createManifest(
 				Level: level,
 				Meta:  meta,
 			})
-			// TODO(bananabrick): Test snapshot changes.
 			if _, ok := dedup[meta.FileBacking.DiskFileNum]; meta.Virtual && !ok {
 				dedup[meta.FileBacking.DiskFileNum] = struct{}{}
 				snapshot.CreatedBackingTables = append(

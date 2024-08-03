@@ -17,8 +17,9 @@ import (
 	"github.com/cockroachdb/pebble/internal/invariants"
 	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider/objiotracing"
-	"github.com/cockroachdb/pebble/objstorage/objstorageprovider/sharedobjcat"
-	"github.com/cockroachdb/pebble/objstorage/shared"
+	"github.com/cockroachdb/pebble/objstorage/objstorageprovider/remoteobjcat"
+	"github.com/cockroachdb/pebble/objstorage/objstorageprovider/sharedcache"
+	"github.com/cockroachdb/pebble/objstorage/remote"
 	"github.com/cockroachdb/pebble/vfs"
 )
 
@@ -30,18 +31,20 @@ type provider struct {
 
 	tracer *objiotracing.Tracer
 
-	shared sharedSubsystem
+	remote remoteSubsystem
 
 	mu struct {
 		sync.RWMutex
 
-		shared struct {
-			// catalogBatch accumulates shared object creations and deletions until
+		remote struct {
+			// catalogBatch accumulates remote object creations and deletions until
 			// Sync is called.
-			catalogBatch sharedobjcat.Batch
+			catalogBatch remoteobjcat.Batch
+
+			storageObjects map[remote.Locator]remote.Storage
 		}
 
-		// localObjectsChanged is set if non-shared objects were created or deleted
+		// localObjectsChanged is set if non-remote objects were created or deleted
 		// but Sync was not yet called.
 		localObjectsChanged bool
 
@@ -89,14 +92,92 @@ type Settings struct {
 	// out a large chunk of dirty filesystem buffers.
 	BytesPerSync int
 
-	// Fields here are set only if the provider is to support shared objects
+	// Local contains fields that are only relevant for files stored on the local
+	// filesystem.
+	Local struct {
+		// TODO(radu): move FSCleaner, NoSyncOnClose, BytesPerSync here.
+
+		// ReadaheadConfigFn is a function used to retrieve the current readahead
+		// mode. This function is run whenever a local object is open for reading.
+		// If it is nil, DefaultReadaheadConfig is used.
+		ReadaheadConfigFn func() ReadaheadConfig
+	}
+
+	// Fields here are set only if the provider is to support remote objects
 	// (experimental).
-	Shared struct {
-		Storage shared.Storage
+	Remote struct {
+		StorageFactory remote.StorageFactory
+
+		// If CreateOnShared is non-zero, sstables are created on remote storage using
+		// the CreateOnSharedLocator (when the PreferSharedStorage create option is
+		// true).
+		CreateOnShared        remote.CreateOnSharedStrategy
+		CreateOnSharedLocator remote.Locator
+
+		// CacheSizeBytes is the size of the on-disk block cache for objects
+		// on remote storage. If it is 0, no cache is used.
+		CacheSizeBytes int64
+
+		// CacheBlockSize is the block size of the cache; if 0, the default of 32KB is used.
+		CacheBlockSize int
+
+		// ShardingBlockSize is the size of a shard block. The cache is split into contiguous
+		// ShardingBlockSize units. The units are distributed across multiple independent shards
+		// of the cache, via a hash(offset) modulo num shards operation. The cache replacement
+		// policies operate at the level of shard, not whole cache. This is done to reduce lock
+		// contention.
+		//
+		// If ShardingBlockSize is 0, the default of 1 MB is used.
+		ShardingBlockSize int64
+
+		// The number of independent shards the cache leverages. Each shard is the same size,
+		// and a hash of filenum & offset map a read to a certain shard. If set to 0,
+		// 2*runtime.GOMAXPROCS is used as the shard count.
+		CacheShardCount int
+
+		// TODO(radu): allow the cache to live on another FS/location (e.g. to use
+		// instance-local SSD).
 	}
 }
 
-// DefaultSettings initializes default settings (with no shared storage),
+// ReadaheadConfig controls the use of read-ahead.
+type ReadaheadConfig struct {
+	// Informed is the type of read-ahead for operations that are known to read a
+	// large consecutive chunk of a file.
+	Informed ReadaheadMode
+
+	// Speculative is the type of read-ahead used automatically, when consecutive
+	// reads are detected.
+	Speculative ReadaheadMode
+}
+
+// DefaultReadaheadConfig is the readahead config used when ReadaheadConfigFn is
+// not specified.
+var DefaultReadaheadConfig = ReadaheadConfig{
+	Informed:    FadviseSequential,
+	Speculative: FadviseSequential,
+}
+
+// ReadaheadMode indicates the type of read-ahead to use, either for informed
+// read-ahead (e.g. compactions) or speculative read-ahead.
+type ReadaheadMode uint8
+
+const (
+	// NoReadahead disables readahead altogether.
+	NoReadahead ReadaheadMode = iota
+
+	// SysReadahead enables the use of SYS_READAHEAD call to prefetch data.
+	// The prefetch window grows dynamically as consecutive writes are detected.
+	SysReadahead
+
+	// FadviseSequential enables to use of FADV_SEQUENTIAL. For informed
+	// read-ahead, FADV_SEQUENTIAL is used from the beginning. For speculative
+	// read-ahead SYS_READAHEAD is first used until the window reaches the maximum
+	// size, then we siwtch to FADV_SEQUENTIAL.
+	FadviseSequential
+)
+
+// DefaultSettings initializes default settings (with no remote storage),
 // suitable for tests and tools.
 func DefaultSettings(fs vfs.FS, dirName string) Settings {
 	return Settings{
@@ -111,7 +192,13 @@ func DefaultSettings(fs vfs.FS, dirName string) Settings {
 
 // Open creates the provider.
 func Open(settings Settings) (objstorage.Provider, error) {
-	return open(settings)
+	// Note: we can't just `return open(settings)` because in an error case we
+	// would return (*provider)(nil) which is not objstorage.Provider(nil).
+	p, err := open(settings)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 func open(settings Settings) (p *provider, _ error) {
@@ -142,8 +229,8 @@ func open(settings Settings) (p *provider, _ error) {
 		return nil, err
 	}
 
-	// Initialize shared subsystem (if configured) and add shared objects.
-	if err := p.sharedInit(); err != nil {
+	// Initialize remote subsystem (if configured) and add remote objects.
+	if err := p.remoteInit(); err != nil {
 		return nil, err
 	}
 
@@ -152,9 +239,9 @@ func open(settings Settings) (p *provider, _ error) {
 
 // Close is part of the objstorage.Provider interface.
 func (p *provider) Close() error {
-	var err error
+	err := p.sharedClose()
 	if p.fsDir != nil {
-		err = p.fsDir.Close()
+		err = firstError(err, p.fsDir.Close())
 		p.fsDir = nil
 	}
 	if objiotracing.Enabled {
@@ -182,10 +269,14 @@ func (p *provider) OpenForReading(
 	}
 
 	var r objstorage.Readable
-	if !meta.IsShared() {
+	if !meta.IsRemote() {
 		r, err = p.vfsOpenForReading(ctx, fileType, fileNum, opts)
 	} else {
-		r, err = p.sharedOpenForReading(ctx, meta, opts)
+		r, err = p.remoteOpenForReading(ctx, meta, opts)
+		if err != nil && p.isNotExistError(meta, err) {
+			// Wrap the error so that IsNotExistError functions properly.
+			err = errors.Mark(err, os.ErrNotExist)
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -206,8 +297,8 @@ func (p *provider) Create(
 	fileNum base.DiskFileNum,
 	opts objstorage.CreateOptions,
 ) (w objstorage.Writable, meta objstorage.ObjectMetadata, err error) {
-	if opts.PreferSharedStorage && p.st.Shared.Storage != nil {
-		w, meta, err = p.sharedCreate(ctx, fileType, fileNum, opts)
+	if opts.PreferSharedStorage && p.st.Remote.CreateOnShared != remote.CreateOnSharedNone {
+		w, meta, err = p.sharedCreate(ctx, fileType, fileNum, p.st.Remote.CreateOnSharedLocator, opts)
 	} else {
 		w, meta, err = p.vfsCreate(ctx, fileType, fileNum)
 	}
@@ -224,8 +315,8 @@ func (p *provider) Create(
 
 // Remove removes an object.
 //
-// Note that if the object is shared, the object is only (conceptually) removed
-// from this provider. If other providers have references on the shared object,
+// Note that if the object is remote, the object is only (conceptually) removed
+// from this provider. If other providers have references on the remote object,
 // it will not be removed.
 //
 // The object is not guaranteed to be durably removed until Sync is called.
@@ -235,11 +326,15 @@ func (p *provider) Remove(fileType base.FileType, fileNum base.DiskFileNum) erro
 		return err
 	}
 
-	if !meta.IsShared() {
+	if !meta.IsRemote() {
 		err = p.vfsRemove(fileType, fileNum)
 	} else {
-		// TODO(radu): implement shared object removal (i.e. deref).
+		// TODO(radu): implement remote object removal (i.e. deref).
 		err = p.sharedUnref(meta)
+		if err != nil && p.isNotExistError(meta, err) {
+			// Wrap the error so that IsNotExistError functions properly.
+			err = errors.Mark(err, os.ErrNotExist)
+		}
 	}
 	if err != nil && !p.IsNotExistError(err) {
 		// We want to be able to retry a Remove, so we keep the object in our list.
@@ -252,15 +347,18 @@ func (p *provider) Remove(fileType base.FileType, fileNum base.DiskFileNum) erro
 	return err
 }
 
+func (p *provider) isNotExistError(meta objstorage.ObjectMetadata, err error) bool {
+	if meta.Remote.Storage != nil {
+		return meta.Remote.Storage.IsNotExistError(err)
+	}
+	return oserror.IsNotExist(err)
+}
+
 // IsNotExistError is part of the objstorage.Provider interface.
 func (p *provider) IsNotExistError(err error) bool {
-	if oserror.IsNotExist(err) {
-		return true
-	}
-	if p.sharedStorage() != nil && p.sharedStorage().IsNotExistError(err) {
-		return true
-	}
-	return false
+	// We use errors.Mark(err, os.ErrNotExist) for not-exist errors coming from
+	// remote.Storage.
+	return oserror.IsNotExist(err)
 }
 
 // Sync flushes the metadata from creation or removal of objects since the last Sync.
@@ -288,7 +386,7 @@ func (p *provider) LinkOrCopyFromLocal(
 	dstFileNum base.DiskFileNum,
 	opts objstorage.CreateOptions,
 ) (objstorage.ObjectMetadata, error) {
-	shared := opts.PreferSharedStorage && p.st.Shared.Storage != nil
+	shared := opts.PreferSharedStorage && p.st.Remote.CreateOnShared != remote.CreateOnSharedNone
 	if !shared && srcFS == p.st.FS {
 		// Wrap the normal filesystem with one which wraps newly created files with
 		// vfs.NewSyncingFile.
@@ -368,18 +466,18 @@ func (p *provider) Lookup(
 
 // Path is part of the objstorage.Provider interface.
 func (p *provider) Path(meta objstorage.ObjectMetadata) string {
-	if !meta.IsShared() {
+	if !meta.IsRemote() {
 		return p.vfsPath(meta.FileType, meta.DiskFileNum)
 	}
-	return p.sharedPath(meta)
+	return p.remotePath(meta)
 }
 
 // Size returns the size of the object.
 func (p *provider) Size(meta objstorage.ObjectMetadata) (int64, error) {
-	if !meta.IsShared() {
+	if !meta.IsRemote() {
 		return p.vfsSize(meta.FileType, meta.DiskFileNum)
 	}
-	return p.sharedSize(meta)
+	return p.remoteSize(meta)
 }
 
 // List is part of the objstorage.Provider interface.
@@ -396,17 +494,29 @@ func (p *provider) List() []objstorage.ObjectMetadata {
 	return res
 }
 
+// Metrics is part of the objstorage.Provider interface.
+func (p *provider) Metrics() sharedcache.Metrics {
+	if p.remote.cache != nil {
+		return p.remote.cache.Metrics()
+	}
+	return sharedcache.Metrics{}
+}
+
 func (p *provider) addMetadata(meta objstorage.ObjectMetadata) {
+	if invariants.Enabled {
+		meta.AssertValid()
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.mu.knownObjects[meta.DiskFileNum] = meta
-	if meta.IsShared() {
-		p.mu.shared.catalogBatch.AddObject(sharedobjcat.SharedObjectMetadata{
+	if meta.IsRemote() {
+		p.mu.remote.catalogBatch.AddObject(remoteobjcat.RemoteObjectMetadata{
 			FileNum:        meta.DiskFileNum,
 			FileType:       meta.FileType,
-			CreatorID:      meta.Shared.CreatorID,
-			CreatorFileNum: meta.Shared.CreatorFileNum,
-			CleanupMethod:  meta.Shared.CleanupMethod,
+			CreatorID:      meta.Remote.CreatorID,
+			CreatorFileNum: meta.Remote.CreatorFileNum,
+			Locator:        meta.Remote.Locator,
+			CleanupMethod:  meta.Remote.CleanupMethod,
 		})
 	} else {
 		p.mu.localObjectsChanged = true
@@ -422,14 +532,14 @@ func (p *provider) removeMetadata(fileNum base.DiskFileNum) {
 		return
 	}
 	delete(p.mu.knownObjects, fileNum)
-	if meta.IsShared() {
-		p.mu.shared.catalogBatch.DeleteObject(fileNum)
+	if meta.IsRemote() {
+		p.mu.remote.catalogBatch.DeleteObject(fileNum)
 	} else {
 		p.mu.localObjectsChanged = true
 	}
 }
 
-// protectObject prevents the unreferencing of a shared object until
+// protectObject prevents the unreferencing of a remote object until
 // unprotectObject is called.
 func (p *provider) protectObject(fileNum base.DiskFileNum) {
 	p.mu.Lock()
