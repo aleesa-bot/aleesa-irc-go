@@ -77,7 +77,7 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%ssome_brew                  - выдать соответствующий напиток, бармен может налить rum, ром, vodka, водку, tequila, текила, whisky, виски, absinthe, абсент", config.Csign)}
 			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sver | %sversion             - написать что-то про версию ПО", config.Csign, config.Csign)}
 			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sверсия                     - написать что-то про версию ПО", config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sw город | %sп город         - погода в городе", config.Csign, config.Csign)}
+			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sw <город> | %sп <город>     - погода в городе", config.Csign, config.Csign)}
 			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sxkcd                       - комикс-стрип с xkcb.ru", config.Csign)}
 
 			if userModeIsOped(channel, nick) {
@@ -185,7 +185,8 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 				"пословица", "пословиться", "fortune", "фортунка", "f", "ф", "anek", "анек", "анекдот", "buni", "cat",
 				"кис", "drink", "праздник", "fox", "лис", "frog", "лягушка", "horse", "лошадь", "лошадка", "monkeyuser",
 				"owl", "сова", "сыч", "rabbit", "bunny", "кролик", "snail", "улитка", "xkcd", "dig", "копать", "fish",
-				"fishing", "рыба", "рыбка", "рыбалка", "karma", "карма"}
+				"fishing", "рыба", "рыбка", "рыбалка", "karma", "карма", "w", "п", "weather", "погода", "погодка",
+				"погадка"}
 
 			for _, command := range cmds {
 				if cmd == command {
