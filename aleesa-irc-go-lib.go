@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"aleesa-irc-go/internal/boolcollection"
+
 	log "github.com/sirupsen/logrus"
 	irc "github.com/thoj/go-ircevent"
 )
@@ -56,17 +58,24 @@ func ircClientRun() {
 			e.Connection.Lock()
 
 			// Формат строки с MODE-ами https://datatracker.ietf.org/doc/html/rfc2812#section-5.1 .
+			availableUserModes = boolcollection.NewCollection()
+			availableChanModes = boolcollection.NewCollection()
+
 			log.Debugf("Add %s to list of available user modes", e.Arguments[3])
 
 			for _, mode := range strings.Split(e.Arguments[3], "") {
 				availableUserModes.Set(mode, true)
 			}
 
+			availableUserModes.Set("announced", true)
+
 			log.Debugf("Add %s to list available channel modes", e.Arguments[4])
 
 			for _, mode := range strings.Split(e.Arguments[4], "") {
 				availableChanModes.Set(mode, true)
 			}
+
+			availableChanModes.Set("announced", true)
 
 			e.Connection.Unlock()
 		})
@@ -157,17 +166,19 @@ func ircClientRun() {
 			log.Debugf("376 RPL_ENDOFMOTD %s", e.Raw)
 
 			// Если у нас есть доступный +B возьмём его себе, мы же бот.
-			botFlag, ok := availableUserModes.Get("B")
+			announced, _ := availableUserModes.Get("announced")
+			botFlag, _ := availableUserModes.Get("B")
 
-			if ok && botFlag {
-				log.Info("Grabbing +B flag to mark me as bot")
-				ircClient.Mode(ircClient.GetNick(), "+B")
-			} else {
-				if ok {
-					log.Info("Skip +B flag, server does not support it, noone will know that I am bot")
+			if announced {
+				if botFlag {
+					log.Info("Grabbing +B flag to mark me as bot")
+					ircClient.Mode(ircClient.GetNick(), "+B")
 				} else {
-					log.Info("Skip +B flag, server did not announce modes (yet?), noone will know that I am bot")
+					log.Info("Skip +B flag, server does not support it, noone will know that I am bot")
 				}
+			} else {
+				// Этого по идее не должно быть.
+				log.Info("Skip +B flag, server did not announce modes (yet?), noone will know that I am bot")
 			}
 
 			if !config.Irc.Sasl && config.Irc.Password != "" && !nickIsUsed {
@@ -438,7 +449,7 @@ func ircClientRun() {
 				log.Infof("%s renames themself to %s", srcNick, dstNick)
 			}
 
-			// Неважно чей ник сменился, надо забыть, что было и снова узнать mode-ы сменишего nick джентельмена
+			// Неважно чей ник сменился, надо забыть, что было и снова узнать mode-ы сменишего nick джентельмена.
 			// TODO: реализовать userModeRenameUser()
 			userModePurgeUser(srcNick)
 			ircClient.Whois(dstNick)
@@ -450,12 +461,12 @@ func ircClientRun() {
 			channel := e.Arguments[0]
 
 			if nick == ircClient.GetNick() {
+				// Команда names отправляется автоматом.
 				log.Infof("I joined to %s", channel)
-				// Команда names отправляется автоматом
 			} else {
 				log.Infof("%s joined to %s", fullNick, channel)
 				// Технически, тут не надо спрашивать whois на пользователя, но мы спрашиваем, чтобы уточнить mode,
-				// вдруг сервер проставляет mode заранее (хотя не должен)
+				// вдруг сервер проставляет mode заранее (хотя не должен).
 				ircClient.Whois(nick)
 			}
 		})

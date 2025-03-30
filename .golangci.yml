@@ -72,7 +72,6 @@ linters:
       - examples$
 formatters:
   enable:
-    - gci
     - gofmt
     - goimports
   exclusions:

@@ -6,6 +6,7 @@ import (
 
 	"aleesa-irc-go/internal/anycollection"
 	"aleesa-irc-go/internal/boolcollection"
+
 	"github.com/cockroachdb/pebble"
 	"github.com/go-redis/redis/v8"
 	irc "github.com/thoj/go-ircevent"
