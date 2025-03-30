@@ -6,8 +6,7 @@ BUILDOPTS=-ldflags="-s -w" -a -gcflags=all=-l -trimpath
 all: clean build
 
 build:
-	${GOOPTS} go build ${BUILDOPTS} -o aleesa-irc-go types.go globals.go collection.go irc-user-mode.go \
-	    settings-db-util.go util.go msg-parsers.go aleesa-irc-go-lib.go main.go
+	${GOOPTS} go build ${BUILDOPTS} -o aleesa-irc-go .
 
 clean:
 	go clean

@@ -11,6 +11,7 @@ import (
 	irc "github.com/thoj/go-ircevent"
 )
 
+// TODO: Implement 005 REPL_BOUNCE
 // ircClientInit горутинка для работы с протоколом irc
 func ircClientRun() {
 	for {
@@ -47,7 +48,33 @@ func ircClientRun() {
 			ircClient.UseSASL = true
 		}
 
-		// Навесим коллбэков на некоторые ответы сервера на наши запросы
+		// Навесим коллбэков на некоторые ответы сервера на наши запросы.
+
+		// 001 RPL_WELCOME уже есть в github.com/thoj/go-ircevent/irc_callback.go.
+		// Сделаем уже что-то полезное! Motd нам уже прислали и теперь можно авторизоваться и джойниться
+		ircClient.AddCallback("004", func(e *irc.Event) {
+			// Из это строки мы можем узнать, какие флаги для user MODE и channem MODE можно навешивать.
+			// Как минимум, эта строка нам нужна, чтобы выяснить, можем ли мы взять себе +B, мы же бот :).
+			log.Debugf("004 RPL_MYINFO, %s", e.Raw)
+
+			e.Connection.Lock()
+
+			// Формат строки с MODE-ами https://datatracker.ietf.org/doc/html/rfc2812#section-5.1 .
+			log.Debugf("Add %s to list of available user modes", e.Arguments[3])
+
+			for _, mode := range strings.Split(e.Arguments[3], "") {
+				availableUserModes.Set(mode, true)
+			}
+
+			log.Debugf("Add %s to list available channel modes", e.Arguments[4])
+
+			for _, mode := range strings.Split(e.Arguments[4], "") {
+				availableChanModes.Set(mode, true)
+			}
+
+			e.Connection.Unlock()
+		})
+
 		ircClient.AddCallback("319", func(e *irc.Event) {
 			/* Это одна из строк с данными, прилетающая в ответ на запрос whois на определённого юзера
 			 * Из этой строки нас интересует, на каких каналах пользователь op (то есть с префиксом @) или имеет voice
@@ -83,9 +110,12 @@ func ircClientRun() {
 			}
 		})
 
+		// 433 ERR_NICKNAMEINUSE уже есть в github.com/thoj/go-ircevent/irc_callback.go.
+
 		ircClient.AddCallback("353", func(e *irc.Event) {
 			// Это одна из строк данных, прилетающая в ответ на запрос names, на канале
 			log.Debugf("353 RPL_NAMREPLY, %s", e.Raw)
+			e.Connection.Lock()
 			namesString := e.Arguments[3]
 			channel := e.Arguments[2]
 
@@ -114,12 +144,46 @@ func ircClientRun() {
 					break
 				}
 			}
+			e.Connection.Unlock()
 		})
 
 		ircClient.AddCallback("352", func(e *irc.Event) {
 			// Относительно бесполезная для нас команда. Не возвращает канала (в случае с ngircd), так что узнать mode
 			// юзера на конкретном канале из этого невозможно. А остальные данные пока непонятно куда применять.
 			log.Warnf("352 RPL_WHOREPLY, %s", e.Raw)
+		})
+
+		// Если сервер не может прочитать MOTD, то он может вернуть 422 ERR_NOMOTD, тоде самое навесим и туда тоже.
+		ircClient.AddCallback("376", func(e *irc.Event) {
+			log.Debugf("376 RPL_ENDOFMOTD %s", e.Raw)
+
+			// Если у нас есть доступный +B возьмём его себе, мы же бот.
+			botFlag, ok := availableUserModes.Get("B")
+
+			if ok && botFlag {
+				log.Info("Grabbing +B flag to mark me as bot")
+				ircClient.Mode(ircClient.GetNick(), "+B")
+			} else {
+				if ok {
+					log.Info("Skip +B flag, server does not support it, noone will know that I am bot")
+				} else {
+					log.Info("Skip +B flag, server did not announce modes (yet?), noone will know that I am bot")
+				}
+			}
+
+			if !config.Irc.Sasl && config.Irc.Password != "" && !nickIsUsed {
+				log.Info("Identifying via NickServ")
+				message := fmt.Sprintf("identify %s %s", config.Irc.Nick, config.Irc.Password)
+				imChan <- iMsg{ChatId: "NickServ", Text: message}
+			}
+			// TODO: wait until +R flag been set? could be implemented with waiting for channel message.
+
+			log.Debug("Trying to join to preconfigured channels")
+
+			for _, channel := range config.Irc.Channels {
+				log.Infof("Joining to %s channel", channel)
+				ircClient.Join(channel)
+			}
 		})
 
 		// Навесим коллбэков на все возможные и невозможные error status code, которые мы можем получить и сдампим это
@@ -157,6 +221,39 @@ func ircClientRun() {
 			log.Errorf("421 ERR_UNKNOWNCOMMAND, %s", e.Raw)
 		})
 
+		// Аналогичный коллбэк висит на 376 RPL_ENDOFMOTD.
+		ircClient.AddCallback("422", func(e *irc.Event) {
+			log.Debugf("422 ERR_NOMOTD %s", e.Raw)
+
+			// Если у нас есть доступный +B возьмём его себе, мы же бот.
+			botFlag, ok := availableUserModes.Get("B")
+
+			if ok && botFlag {
+				log.Info("Grabbing +B flag to mark me as bot")
+				ircClient.Mode(ircClient.GetNick(), "+B")
+			} else {
+				if ok {
+					log.Info("Skip +B flag, server does not support it, noone will know that I am bot")
+				} else {
+					log.Info("Skip +B flag, server did not announce modes (yet?), noone will know that I am bot")
+				}
+			}
+
+			if !config.Irc.Sasl && config.Irc.Password != "" && !nickIsUsed {
+				log.Info("Identifying via NickServ")
+				message := fmt.Sprintf("identify %s %s", config.Irc.Nick, config.Irc.Password)
+				imChan <- iMsg{ChatId: "NickServ", Text: message}
+			}
+			// TODO: wait until +R flag been set? could be implemented with waiting for channel message.
+
+			log.Debug("Trying to join to preconfigured channels")
+
+			for _, channel := range config.Irc.Channels {
+				log.Infof("Joining to %s channel", channel)
+				ircClient.Join(channel)
+			}
+		})
+
 		ircClient.AddCallback("431", func(e *irc.Event) {
 			log.Errorf("431 ERR_NONICKNAMEGIVEN, %s", e.Raw)
 		})
@@ -179,6 +276,7 @@ func ircClientRun() {
 			log.Errorf("436 ERR_NICKCOLLISION, %s", e.Raw)
 		})
 
+		// 437: ERR_UNAVAILRESOURCE уже есть в github.com/thoj/go-ircevent/irc_callback.go.
 		ircClient.AddCallback("437", func(e *irc.Event) {
 			log.Errorf("437 ERR_UNAVAILRESOURCE, %s", e.Raw)
 		})
@@ -292,22 +390,6 @@ func ircClientRun() {
 
 		ircClient.AddCallback("502", func(e *irc.Event) {
 			log.Errorf("502 ERR_USERSDONTMATCH, %s", e.Raw)
-		})
-
-		// Сделаем уже что-то полезное! Motd нам уже прислали и теперь можно авторизоваться и джойниться
-		ircClient.AddCallback("001", func(e *irc.Event) {
-			if !config.Irc.Sasl && config.Irc.Password != "" && !nickIsUsed {
-				log.Info("Identifying via NickServ")
-				message := fmt.Sprintf("identify %s %s", config.Irc.Nick, config.Irc.Password)
-				imChan <- iMsg{ChatId: "NickServ", Text: message}
-			}
-
-			log.Debug("Trying to join to preconfigured channels")
-
-			for _, channel := range config.Irc.Channels {
-				log.Infof("Joining to %s channel", channel)
-				ircClient.Join(channel)
-			}
 		})
 
 		// Навесим коллбэков на другие, интересные нам события

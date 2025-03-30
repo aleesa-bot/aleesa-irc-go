@@ -361,8 +361,6 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 			log.Debugf("Sent msg to redis channel %s: %s", config.Redis.Channel, string(data))
 		}
 	}
-
-	return
 }
 
 // redisMsgParser парсит json-чики прилетевшие из REDIS-ки, причём, json-чики должны быть относительно валидными
@@ -443,8 +441,6 @@ func redisMsgParser(msg string) {
 			imChan <- iMsg{ChatId: j.Chatid, Text: message}
 		}
 	}
-
-	return
 }
 
 /* vim: set ft=go noet ai ts=4 sw=4 sts=4: */

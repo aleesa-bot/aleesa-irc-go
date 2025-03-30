@@ -108,7 +108,7 @@ func readConfig() {
 			log.Infof("Irc port is not defined in config, using 6667")
 		}
 
-		if sampleConfig.Irc.Ssl != true {
+		if !sampleConfig.Irc.Ssl {
 			sampleConfig.Irc.SslVerify = false
 		}
 

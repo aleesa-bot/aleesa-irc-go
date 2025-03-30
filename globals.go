@@ -4,6 +4,9 @@ import (
 	"context"
 	"os"
 
+	"aleesa-irc-go/internal/anycollection"
+	"aleesa-irc-go/internal/boolcollection"
+
 	"github.com/cockroachdb/pebble"
 	"github.com/go-redis/redis/v8"
 	irc "github.com/thoj/go-ircevent"
@@ -45,6 +48,12 @@ var msgBucket bucket
 var settingsDB = make(map[string]*pebble.DB)
 
 // "Базюлька" с MODE-ами пользователей на каналах
-var userMode = NewCollection()
+var userMode = anycollection.NewCollection()
+
+// "Базюлька" с доступными MODE-ами пользователя
+var availableUserModes = boolcollection.NewCollection()
+
+// "Базюлька" c с доступными MODE-ами каналов
+var availableChanModes = boolcollection.NewCollection()
 
 /* vim: set ft=go noet ai ts=4 sw=4 sts=4: */
