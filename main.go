@@ -11,7 +11,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// Производит некоторую инициализацию перед запуском main()
+// Производит некоторую инициализацию перед запуском main().
 func init() {
 	log.SetFormatter(&log.TextFormatter{
 		DisableQuote:           true,
@@ -52,7 +52,7 @@ func init() {
 	userMode.Delete("channel")
 }
 
-// Собственно, какбэ "точка входа" - основная процедура в нашем боте
+// Собственно, какбэ "точка входа" - основная процедура в нашем боте.
 func main() {
 	// Main context
 	var ctx = context.Background()

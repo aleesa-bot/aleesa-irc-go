@@ -1,6 +1,6 @@
 package main
 
-// Конфиг
+// Конфиг.
 type myConfig struct {
 	Redis struct {
 		Server    string `json:"server,omitempty"`
@@ -35,7 +35,7 @@ type myConfig struct {
 	DataDir     string `json:"data_dir,omitempty"`
 }
 
-// Входящее сообщение из pubsub-канала redis-ки
+// Входящее сообщение из pubsub-канала redis-ки.
 type rMsg struct {
 	From     string `json:"from,omitempty"`
 	Chatid   string `json:"chatid,omitempty"`
@@ -55,7 +55,7 @@ type rMsg struct {
 	} `json:"Misc"`
 }
 
-// Исходящее сообщение в pubsub-канал redis-ки
+// Исходящее сообщение в pubsub-канал redis-ки.
 type sMsg struct {
 	From     string `json:"from"`
 	Chatid   string `json:"chatid"`
@@ -75,14 +75,13 @@ type sMsg struct {
 	} `json:"misc"`
 }
 
-// Сообщение в irc
-// TODO: Имплементировать тип сообщения - privmsg или action
+// TODO: Имплементировать тип сообщения - privmsg или action.
 type iMsg struct {
-	ChatId string
+	ChatID string
 	Text   string
 }
 
-// "Ведёрко" для реализации ограничителя скорости отправки исходящих сообщений - Token Bucket
+// "Ведёрко" для реализации ограничителя скорости отправки исходящих сообщений - Token Bucket.
 type bucket struct {
 	Timestamps []int64
 	IsFull     bool

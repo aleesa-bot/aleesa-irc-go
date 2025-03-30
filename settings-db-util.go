@@ -11,9 +11,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// StoreKV сохраняет в указанной бд ключ и значение
+// StoreKV сохраняет в указанной бд ключ и значение.
 func StoreKV(db *pebble.DB, key string, value string) error {
 	var kArray = []byte(key)
+
 	var vArray = []byte(value)
 
 	err := db.Set(kArray, vArray, pebble.Sync)
@@ -21,11 +22,12 @@ func StoreKV(db *pebble.DB, key string, value string) error {
 	return err
 }
 
-// FetchV достаёт значение по ключу
+// FetchV достаёт значение по ключу.
 func FetchV(db *pebble.DB, key string) (string, error) {
 	var kArray = []byte(key)
 
 	var vArray []byte
+
 	var valueString = ""
 
 	vArray, closer, err := db.Get(kArray)
@@ -40,7 +42,7 @@ func FetchV(db *pebble.DB, key string) (string, error) {
 	return valueString, err
 }
 
-// Достанем настройку из БД с настройками
+// Достанем настройку из БД с настройками.
 func getSetting(chatID string, setting string) string {
 	var err error
 
@@ -58,6 +60,7 @@ func getSetting(chatID string, setting string) string {
 
 		if err != nil {
 			log.Errorf("Unable to open settings db, %s: %s\n", database, err)
+
 			return ""
 		}
 	}
@@ -66,13 +69,14 @@ func getSetting(chatID string, setting string) string {
 
 	// Если из базы ничего не вынулось, по каким-то причинам, то просто вернём пустую строку
 	if err != nil {
-		if errors.Is(err, pebble.ErrNotFound) {
+		switch {
+		case errors.Is(err, pebble.ErrNotFound):
 			log.Debugf("Unable to get value for %s: no record found in db %s", setting, database)
-		} else if errors.Is(err, fs.ErrNotExist) {
+		case errors.Is(err, fs.ErrNotExist):
 			log.Debugf("Unable to get value for %s: db dir %s does not exist", setting, database)
-		} else if errors.Is(err, oserror.ErrNotExist) {
+		case errors.Is(err, oserror.ErrNotExist):
 			log.Debugf("Unable to get value for %s: db dir %s does not exist", setting, database)
-		} else {
+		default:
 			log.Errorf("Unable to get value for %s in db dir %s: %s", setting, database, err)
 		}
 
@@ -82,10 +86,12 @@ func getSetting(chatID string, setting string) string {
 	return value
 }
 
-// Сохраним настройку в БД с настройками
+// Сохраним настройку в БД с настройками.
 func saveSetting(chatID string, setting string, value string) error {
 	var chatHash = sha256.Sum256([]byte(chatID))
+
 	var database = fmt.Sprintf("settings_db/%x", chatHash)
+
 	var err error
 
 	// Если БД не открыта, откроем её
@@ -100,6 +106,7 @@ func saveSetting(chatID string, setting string, value string) error {
 
 		if err != nil {
 			log.Errorf("Unable to open settings db, %s: %s\n", database, err)
+
 			return err
 		}
 	}

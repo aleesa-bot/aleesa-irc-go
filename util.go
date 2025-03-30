@@ -11,7 +11,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// Читает и валидирует конфиг, а также выставляет некоторые default-ы, если значений для параметров в конфиге нет
+// Читает и валидирует конфиг, а также выставляет некоторые default-ы, если значений для параметров в конфиге нет.
 func readConfig() {
 	configLoaded := false
 	executablePath, err := os.Executable()
@@ -40,6 +40,7 @@ func readConfig() {
 		// Конфиг-файл длинноват для конфига, попробуем следующего кандидата
 		if fileInfo.Size() > 65535 {
 			log.Warnf("Config file %s is too long for config, skipping", location)
+
 			continue
 		}
 
@@ -48,6 +49,7 @@ func readConfig() {
 		// Не удалось прочитать, попробуем следующего кандидата
 		if err != nil {
 			log.Warnf("Skip reading config file %s: %s", location, err)
+
 			continue
 		}
 
@@ -55,12 +57,14 @@ func readConfig() {
 		// Интереснее на выходе получить структурку: то есть мы вначале конфиг преобразуем в map-ку, затем эту map-ку
 		// сериализуем в json, а потом json преврщааем в стркутурку. Не очень эффективно, но он и не часто требуется.
 		var sampleConfig myConfig
+
 		var tmp map[string]interface{}
 		err = hjson.Unmarshal(buf, &tmp)
 
 		// Не удалось распарсить - попробуем следующего кандидата
 		if err != nil {
 			log.Warnf("Skip parsing config file %s: %s", location, err)
+
 			continue
 		}
 
@@ -69,17 +73,20 @@ func readConfig() {
 		// Не удалось преобразовать map-ку в json
 		if err != nil {
 			log.Warnf("Skip parsing config file %s: %s", location, err)
+
 			continue
 		}
 
 		if err := json.Unmarshal(tmpjson, &sampleConfig); err != nil {
 			log.Warnf("Skip parsing config file %s: %s", location, err)
+
 			continue
 		}
 
 		// Валидируем значения из конфига
 		if sampleConfig.Redis.Server == "" {
 			sampleConfig.Redis.Server = "localhost"
+
 			log.Infof("Redis server is not defined in config, using localhost")
 		}
 
@@ -100,11 +107,13 @@ func readConfig() {
 		// Значения для IRC-клиента
 		if sampleConfig.Irc.Server == "" {
 			sampleConfig.Irc.Server = "localhost"
+
 			log.Errorf("Irc server is not defined in config, using localhost")
 		}
 
 		if sampleConfig.Irc.Port == 0 {
 			sampleConfig.Irc.Port = 6667
+
 			log.Infof("Irc port is not defined in config, using 6667")
 		}
 
@@ -181,7 +190,9 @@ func readConfig() {
 
 		config = sampleConfig
 		configLoaded = true
+
 		log.Infof("Using %s as config file", location)
+
 		break
 	}
 
@@ -191,7 +202,7 @@ func readConfig() {
 	}
 }
 
-// Хэндлер сигналов закрывает все бд, все сетевые соединения и сваливает из приложения
+// Хэндлер сигналов закрывает все бд, все сетевые соединения и сваливает из приложения.
 func sigHandler() {
 	var err error
 

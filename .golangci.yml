@@ -1,0 +1,84 @@
+version: "2"
+run:
+  go: "1.21"
+  modules-download-mode: readonly
+  tests: false
+  allow-parallel-runners: true
+linters:
+  default: none
+  enable:
+    - asasalint
+    - asciicheck
+    - bodyclose
+    - containedctx
+    - contextcheck
+    - decorder
+    - durationcheck
+    - errcheck
+    - errchkjson
+    - errorlint
+    - exhaustive
+    - ginkgolinter
+    - gocheckcompilerdirectives
+    - gocritic
+    - godot
+    - gosec
+    - gosmopolitan
+    - govet
+    - grouper
+    - importas
+    - ineffassign
+    - ireturn
+    - makezero
+    - mirror
+    - nakedret
+    - nilerr
+    - nilnil
+    - nlreturn
+    - noctx
+    - nolintlint
+    - nonamedreturns
+    - predeclared
+    - promlinter
+    - reassign
+    - revive
+    - rowserrcheck
+    - staticcheck
+    - unconvert
+    - unused
+    - wastedassign
+    - whitespace
+    - wsl
+  settings:
+    gosec:
+      excludes:
+        # Оно не используется для повышения безопасности или каких-то таких секъюрных вещей, оно используется для выборки
+        # произвольного элемента из массива, так что ИДИ НАХУЙ с этой проверкой и не еби мозги липовой безопасностью.
+        - G404
+        # Не еби мозги. Сертификаты для локалхоста или для локальной сети могут быть невалидными, если ты сможешь
+        # выписать валидный серт для локалхоста, тебе миллионы разработчиков поставят золотой памятник. Просто потому
+        # что эти пидоры-безпасники всрали всё что только можно всрать своими дебильными политиками.
+        - G402
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+      - vendor$

@@ -9,8 +9,8 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// ircMsgParser парсит сообщения, прилетевшие из IRC-ки
-func ircMsgParser(channel string, nick string, user string, source string, msg string) {
+// ircMsgParser парсит сообщения, прилетевшие из IRC-ки.
+func ircMsgParser(channel string, nick string, user string, source string, msg string) { //nolint: revive
 	// nick - это выбранный пользователем nick (если он занят, то его "нарисует" сервер)
 	// user - это короткое имя пользователя, под которым его видит сервер
 	// source - это длинное имя пользователя, оно содержит в себе помимо user, ещё и ip с которого пришёл пользователь
@@ -48,50 +48,50 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 
 		switch {
 		case cmd == "help" || msg == "помощь":
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%shelp | %sпомощь             - это сообщение", config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sanek | %sанек | %sанекдот    - рандомный анекдот с anekdot.ru", config.Csign, config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sbuni                       - комикс-стрип hapi buni", config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sbunny                      - кролик", config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%srabbit | %sкролик           - кролик", config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%scat | %sкис                 - кошечка", config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sdice | %sroll | %sкости      - бросить кости", config.Csign, config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sdig | %sкопать              - заняться археологией", config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sdrink | %sпраздник          - какой сегодня праздник?", config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sfish | %sfisher             - порыбачить", config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sрыба | %sрыбка | %sрыбалка   - порыбачить", config.Csign, config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sf | %sф                     - рандомная фраза из сборника цитат fortune_mod", config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sfortune | %sфортунка        - рандомная фраза из сборника цитат fortune_mod", config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sfox | %sлис                 - лисичка", config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sfriday | %sпятница          - а не пятница ли сегодня?", config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sfrog | %sлягушка            - лягушка", config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%shorse | %sлошадь | %sлошадка - лошадка", config.Csign, config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%skarma фраза                - посмотреть карму фразы", config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sкарма фраза                - посмотреть карму фразы", config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintln("фраза++ | фраза--           - повысить или понизить карму фразы")}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%slat | %sлат                 - сгенерировать фразу из крылатого латинского выражения", config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%smonkeyuser                 - комикс-стрип MonkeyUser", config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sowl | %sсова                - сова", config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sping | %sпинг               - попинговать бота", config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sproverb | %sпословица       - рандомная русская пословица", config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%ssnail | %sулитка            - улитка", config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%ssome_brew                  - выдать соответствующий напиток, бармен может налить rum, ром, vodka, водку, tequila, текила, whisky, виски, absinthe, абсент", config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sver | %sversion             - написать что-то про версию ПО", config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sверсия                     - написать что-то про версию ПО", config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sw <город> | %sп <город>     - погода в городе", config.Csign, config.Csign)}
-			imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sxkcd                       - комикс-стрип с xkcb.ru", config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%shelp | %sпомощь             - это сообщение", config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sanek | %sанек | %sанекдот    - рандомный анекдот с anekdot.ru", config.Csign, config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sbuni                       - комикс-стрип hapi buni", config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sbunny                      - кролик", config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%srabbit | %sкролик           - кролик", config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%scat | %sкис                 - кошечка", config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sdice | %sroll | %sкости      - бросить кости", config.Csign, config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sdig | %sкопать              - заняться археологией", config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sdrink | %sпраздник          - какой сегодня праздник?", config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sfish | %sfisher             - порыбачить", config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sрыба | %sрыбка | %sрыбалка   - порыбачить", config.Csign, config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sf | %sф                     - рандомная фраза из сборника цитат fortune_mod", config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sfortune | %sфортунка        - рандомная фраза из сборника цитат fortune_mod", config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sfox | %sлис                 - лисичка", config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sfriday | %sпятница          - а не пятница ли сегодня?", config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sfrog | %sлягушка            - лягушка", config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%shorse | %sлошадь | %sлошадка - лошадка", config.Csign, config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%skarma фраза                - посмотреть карму фразы", config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sкарма фраза                - посмотреть карму фразы", config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintln("фраза++ | фраза--           - повысить или понизить карму фразы")}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%slat | %sлат                 - сгенерировать фразу из крылатого латинского выражения", config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%smonkeyuser                 - комикс-стрип MonkeyUser", config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sowl | %sсова                - сова", config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sping | %sпинг               - попинговать бота", config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sproverb | %sпословица       - рандомная русская пословица", config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%ssnail | %sулитка            - улитка", config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%ssome_brew                  - выдать соответствующий напиток, бармен может налить rum, ром, vodka, водку, tequila, текила, whisky, виски, absinthe, абсент", config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sver | %sversion             - написать что-то про версию ПО", config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sверсия                     - написать что-то про версию ПО", config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sw <город> | %sп <город>     - погода в городе", config.Csign, config.Csign)}
+			imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sxkcd                       - комикс-стрип с xkcb.ru", config.Csign)}
 
 			if userModeIsOped(channel, nick) {
-				imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sadmin                      - настройки некоторых плагинов бота для канала", config.Csign)}
+				imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sadmin                      - настройки некоторых плагинов бота для канала", config.Csign)}
 			}
 
 			return
 
 		case cmd == "admin":
 			if userModeIsOped(channel, nick) {
-				imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sadmin oboobs #        - где 1 - вкл, 0 - выкл плагина oboobs", config.Csign)}
-				imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sadmin oboobs         показываем ли сисечки по просьбе участников чата (команды %stits, %stities, %sboobs, %sboobies, %sсиси, %sсисечки)", config.Csign, config.Csign, config.Csign, config.Csign, config.Csign, config.Csign, config.Csign)}
-				imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sadmin obutts #        - где 1 - вкл, 0 - выкл плагина obutts", config.Csign)}
-				imChan <- iMsg{ChatId: nick, Text: fmt.Sprintf("%sadmin obutts         показываем ли попки по просьбе участников чата (команды %sass, %sbutt, %sbooty, %sпопа, %sпопка)", config.Csign, config.Csign, config.Csign, config.Csign, config.Csign, config.Csign)}
+				imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sadmin oboobs #        - где 1 - вкл, 0 - выкл плагина oboobs", config.Csign)}
+				imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sadmin oboobs         показываем ли сисечки по просьбе участников чата (команды %stits, %stities, %sboobs, %sboobies, %sсиси, %sсисечки)", config.Csign, config.Csign, config.Csign, config.Csign, config.Csign, config.Csign, config.Csign)}
+				imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sadmin obutts #        - где 1 - вкл, 0 - выкл плагина obutts", config.Csign)}
+				imChan <- iMsg{ChatID: nick, Text: fmt.Sprintf("%sadmin obutts         показываем ли попки по просьбе участников чата (команды %sass, %sbutt, %sbooty, %sпопа, %sпопка)", config.Csign, config.Csign, config.Csign, config.Csign, config.Csign, config.Csign)}
 			}
 
 			return
@@ -100,16 +100,16 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 			if userModeIsOped(channel, nick) {
 				value := getSetting(channel, "oboobs")
 
-				switch {
-				case value == "":
+				switch value {
+				case "":
 					_ = saveSetting(channel, "oboobs", "0")
-					imChan <- iMsg{ChatId: nick, Text: "Плагин oboobs выключен"}
-				case value == "0":
-					imChan <- iMsg{ChatId: nick, Text: "Плагин oboobs выключен"}
-				case value == "1":
-					imChan <- iMsg{ChatId: nick, Text: "Плагин oboobs включен"}
+					imChan <- iMsg{ChatID: nick, Text: "Плагин oboobs выключен"}
+				case "0":
+					imChan <- iMsg{ChatID: nick, Text: "Плагин oboobs выключен"}
+				case "1":
+					imChan <- iMsg{ChatID: nick, Text: "Плагин oboobs включен"}
 				default:
-					imChan <- iMsg{ChatId: nick, Text: "Плагин oboobs выключен"}
+					imChan <- iMsg{ChatID: nick, Text: "Плагин oboobs выключен"}
 				}
 			}
 
@@ -120,9 +120,9 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 				err := saveSetting(channel, "oboobs", "1")
 
 				if err != nil {
-					imChan <- iMsg{ChatId: nick, Text: "Плагин oboobs всё ещё выключен"}
+					imChan <- iMsg{ChatID: nick, Text: "Плагин oboobs всё ещё выключен"}
 				} else {
-					imChan <- iMsg{ChatId: nick, Text: "Плагин oboobs включен"}
+					imChan <- iMsg{ChatID: nick, Text: "Плагин oboobs включен"}
 				}
 			}
 
@@ -131,7 +131,7 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 		case cmd == "admin oboobs 0":
 			if userModeIsOped(channel, nick) {
 				_ = saveSetting(channel, "oboobs", "0")
-				imChan <- iMsg{ChatId: nick, Text: "Плагин oboobs выключен"}
+				imChan <- iMsg{ChatID: nick, Text: "Плагин oboobs выключен"}
 			}
 
 			return
@@ -140,16 +140,16 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 			if userModeIsOped(channel, nick) {
 				value := getSetting(channel, "obutts")
 
-				switch {
-				case value == "":
+				switch value {
+				case "":
 					_ = saveSetting(channel, "obutts", "0")
-					imChan <- iMsg{ChatId: nick, Text: "Плагин obutts выключен"}
-				case value == "0":
-					imChan <- iMsg{ChatId: nick, Text: "Плагин obutts выключен"}
-				case value == "1":
-					imChan <- iMsg{ChatId: nick, Text: "Плагин obutts включен"}
+					imChan <- iMsg{ChatID: nick, Text: "Плагин obutts выключен"}
+				case "0":
+					imChan <- iMsg{ChatID: nick, Text: "Плагин obutts выключен"}
+				case "1":
+					imChan <- iMsg{ChatID: nick, Text: "Плагин obutts включен"}
 				default:
-					imChan <- iMsg{ChatId: nick, Text: "Плагин obutts выключен"}
+					imChan <- iMsg{ChatID: nick, Text: "Плагин obutts выключен"}
 				}
 			}
 
@@ -160,9 +160,9 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 				err := saveSetting(channel, "obutts", "1")
 
 				if err != nil {
-					imChan <- iMsg{ChatId: nick, Text: "Плагин obutts всё ещё выключен"}
+					imChan <- iMsg{ChatID: nick, Text: "Плагин obutts всё ещё выключен"}
 				} else {
-					imChan <- iMsg{ChatId: nick, Text: "Плагин obutts включен"}
+					imChan <- iMsg{ChatID: nick, Text: "Плагин obutts включен"}
 				}
 			}
 
@@ -171,7 +171,7 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 		case cmd == "admin obutts 0":
 			if userModeIsOped(channel, nick) {
 				_ = saveSetting(channel, "obutts", "0")
-				imChan <- iMsg{ChatId: nick, Text: "Плагин obutts выключен"}
+				imChan <- iMsg{ChatID: nick, Text: "Плагин obutts выключен"}
 			}
 
 			return
@@ -192,6 +192,7 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 				if cmd == command {
 					done = true
 					outgoingMessage = msg
+
 					break
 				}
 			}
@@ -206,6 +207,7 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 					if cmd == command {
 						done = true
 						outgoingMessage = msg
+
 						break
 					}
 				}
@@ -226,7 +228,8 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 									message.Misc.Username = strings.TrimSpace(pile[1])
 								} else {
 									msg = fmt.Sprintf("Я тут не вижу участника с ником %s", userNick)
-									imChan <- iMsg{ChatId: channel, Text: msg}
+									imChan <- iMsg{ChatID: channel, Text: msg}
+
 									return
 								}
 							} // в противном случае юзер просто поставил пробел на конце команды, интерпретируем это как
@@ -234,6 +237,7 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 
 							outgoingMessage = msg
 							done = true
+
 							break
 						}
 					}
@@ -250,6 +254,7 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 					if cmdLen > len(command) && cmd[0:len(command)] == command {
 						done = true
 						outgoingMessage = msg
+
 						break
 					}
 				}
@@ -267,6 +272,7 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 						if cmd[:cmdLen] == command {
 							done = true
 							outgoingMessage = msg
+
 							break
 						}
 					}
@@ -283,6 +289,7 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 							if cmd[:cmdLen] == command {
 								// done = true
 								outgoingMessage = msg
+
 								break
 							}
 						}
@@ -297,6 +304,7 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 
 			if err != nil {
 				log.Warnf("Unable to to serialize message for redis: %s", err)
+
 				return
 			}
 
@@ -351,6 +359,7 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 
 		if err != nil {
 			log.Warnf("Unable to to serialize message for redis: %s", err)
+
 			return
 		}
 
@@ -363,7 +372,7 @@ func ircMsgParser(channel string, nick string, user string, source string, msg s
 	}
 }
 
-// redisMsgParser парсит json-чики прилетевшие из REDIS-ки, причём, json-чики должны быть относительно валидными
+// redisMsgParser парсит json-чики прилетевшие из REDIS-ки, причём, json-чики должны быть относительно валидными.
 func redisMsgParser(msg string) {
 	if shutdown {
 		// Если мы завершаем работу программы, то нам ничего обрабатывать не надо
@@ -376,43 +385,51 @@ func redisMsgParser(msg string) {
 
 	if err := json.Unmarshal([]byte(msg), &j); err != nil {
 		log.Warnf("Unable to to parse message from redis channel: %s", err)
+
 		return
 	}
 
 	// Validate our j
 	if exist := j.From; exist == "" {
 		log.Warnf("Incorrect msg from redis, no from field: %s", msg)
+
 		return
 	}
 
 	if exist := j.Chatid; exist == "" {
 		log.Warnf("Incorrect msg from redis, no chatid field: %s", msg)
+
 		return
 	}
 
 	if exist := j.Userid; exist == "" {
 		log.Warnf("Incorrect msg from redis, no userid field: %s", msg)
+
 		return
 	}
 
 	if exist := j.Message; exist == "" {
 		log.Warnf("Incorrect msg from redis, no message field: %s", msg)
+
 		return
 	}
 
 	if exist := j.Plugin; exist == "" {
 		log.Warnf("Incorrect msg from redis, no plugin field: %s", msg)
+
 		return
 	}
 
 	if exist := j.Mode; exist == "" {
 		log.Warnf("Incorrect msg from redis, no mode field: %s", msg)
+
 		return
 	}
 
 	// j.Misc.Answer может и не быть, тогда ответа на такое сообщение не будет
 	if j.Misc.Answer == 0 {
 		log.Debug("Field Misc->Answer = 0, skipping message")
+
 		return
 	}
 
@@ -436,9 +453,9 @@ func redisMsgParser(msg string) {
 
 	for _, message := range lines {
 		if userModeIsOped(j.Chatid, ircClient.GetNick()) || userModeIsVoiced(j.Chatid, ircClient.GetNick()) {
-			imChanUnrestricted <- iMsg{ChatId: j.Chatid, Text: message}
+			imChanUnrestricted <- iMsg{ChatID: j.Chatid, Text: message}
 		} else {
-			imChan <- iMsg{ChatId: j.Chatid, Text: message}
+			imChan <- iMsg{ChatID: j.Chatid, Text: message}
 		}
 	}
 }

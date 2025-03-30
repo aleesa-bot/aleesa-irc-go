@@ -11,15 +11,9 @@ import (
 	irc "github.com/thoj/go-ircevent"
 )
 
-// TODO: Implement 005 REPL_BOUNCE
-// ircClientInit горутинка для работы с протоколом irc
+// ircClientInit горутинка для работы с протоколом irc.
 func ircClientRun() {
-	for {
-		if shutdown {
-			// Если мы завершаем работу программы, то нам ничего обрабатывать не надо
-			break
-		}
-
+	for !shutdown {
 		// Иницализируем irc-клиента
 		serverString := fmt.Sprintf("%s:%d", config.Irc.Server, config.Irc.Port)
 		log.Debugf("Preparing to connect to %s", serverString)
@@ -30,10 +24,12 @@ func ircClientRun() {
 
 		if config.Irc.Ssl {
 			log.Debug("Force use ssl for connection")
+
 			ircClient.UseTLS = true
 
 			if !config.Irc.SslVerify {
 				log.Debug("Skip server certificate validation")
+
 				ircClient.TLSConfig = &tls.Config{InsecureSkipVerify: true}
 			} else {
 				log.Debug("Force server certificate validation")
@@ -92,18 +88,19 @@ func ircClientRun() {
 
 					if channel == mychannel {
 						// Для каждого канала формат строго 1 из 4-х:  #channel | @#channel | +#channel | @+#channel
-						switch {
-						case modes == "@+":
+						switch modes {
+						case "@+":
 							userModeUpdateUser(channel, dstNick, "+o")
 							userModeUpdateUser(channel, dstNick, "+v")
-						case modes == "@":
+						case "@":
 							userModeUpdateUser(channel, dstNick, "+o")
-						case modes == "+":
+						case "+":
 							userModeUpdateUser(channel, dstNick, "+v")
 						default:
 							userModeUpdateUser(channel, dstNick, "-o")
 							userModeUpdateUser(channel, dstNick, "-v")
 						}
+
 						break
 					}
 				}
@@ -123,6 +120,7 @@ func ircClientRun() {
 				if channel == mychannel {
 					for _, name := range strings.Split(namesString, " ") {
 						mode := name[:1]
+
 						var nick string
 
 						if mode == "@" || mode == "+" {
@@ -131,16 +129,17 @@ func ircClientRun() {
 							nick = name
 						}
 
-						switch {
-						case mode == "@":
+						switch mode {
+						case "@":
 							userModeUpdateUser(channel, nick, "+o")
-						case mode == "+":
+						case "+":
 							userModeUpdateUser(channel, nick, "+v")
 						default:
 							userModeUpdateUser(channel, nick, "-o")
 							userModeUpdateUser(channel, nick, "-v")
 						}
 					}
+
 					break
 				}
 			}
@@ -173,8 +172,9 @@ func ircClientRun() {
 
 			if !config.Irc.Sasl && config.Irc.Password != "" && !nickIsUsed {
 				log.Info("Identifying via NickServ")
+
 				message := fmt.Sprintf("identify %s %s", config.Irc.Nick, config.Irc.Password)
-				imChan <- iMsg{ChatId: "NickServ", Text: message}
+				imChan <- iMsg{ChatID: "NickServ", Text: message}
 			}
 			// TODO: wait until +R flag been set? could be implemented with waiting for channel message.
 
@@ -241,8 +241,9 @@ func ircClientRun() {
 
 			if !config.Irc.Sasl && config.Irc.Password != "" && !nickIsUsed {
 				log.Info("Identifying via NickServ")
+
 				message := fmt.Sprintf("identify %s %s", config.Irc.Nick, config.Irc.Password)
-				imChan <- iMsg{ChatId: "NickServ", Text: message}
+				imChan <- iMsg{ChatID: "NickServ", Text: message}
 			}
 			// TODO: wait until +R flag been set? could be implemented with waiting for channel message.
 
@@ -264,8 +265,11 @@ func ircClientRun() {
 
 		ircClient.AddCallback("433", func(e *irc.Event) {
 			log.Errorf("433 ERR_NICKNAMEINUSE, %s", e.Raw)
+
 			nickIsUsed = true
-			time.Sleep(60 * time.Second)
+
+			<-time.NewTimer(60 * time.Second).C // 1 minute sleep.
+
 			ircClient.Nick(config.Irc.Nick)
 		})
 
@@ -321,6 +325,7 @@ func ircClientRun() {
 			for _, ircChan := range config.Irc.Channels {
 				if ircChan == channel {
 					ircClient.Join(channel)
+
 					break
 				}
 			}
@@ -341,6 +346,7 @@ func ircClientRun() {
 			for _, ircChan := range config.Irc.Channels {
 				if ircChan == channel {
 					ircClient.Join(channel)
+
 					break
 				}
 			}
@@ -359,6 +365,7 @@ func ircClientRun() {
 			for _, ircChan := range config.Irc.Channels {
 				if ircChan == channel {
 					ircClient.Join(channel)
+
 					break
 				}
 			}
@@ -423,8 +430,9 @@ func ircClientRun() {
 					log.Warn("I regain my nick")
 				} else {
 					log.Warn("I regain my nick, trying to identify myself via NickServ")
+
 					message := fmt.Sprintf("identify %s %s", config.Irc.Nick, config.Irc.Password)
-					imChan <- iMsg{ChatId: "NickServ", Text: message}
+					imChan <- iMsg{ChatID: "NickServ", Text: message}
 				}
 			} else {
 				log.Infof("%s renames themself to %s", srcNick, dstNick)
@@ -485,6 +493,7 @@ func ircClientRun() {
 			channel := e.Arguments[0]
 			fullSrcNick := e.Source
 			srcNick := e.Nick
+
 			var dstNick string
 
 			if len(e.Arguments) >= 3 { // кого-то по-MODE-или на канале
@@ -497,6 +506,7 @@ func ircClientRun() {
 				}
 			} else { // Установка mode-а при заходе на сервер
 				dstNick = e.Arguments[0]
+
 				log.Infof("Server set my mode to %s", mode)
 			}
 
@@ -545,8 +555,9 @@ func ircClientRun() {
 		log.Debugf("Make an actual connection to irc")
 
 		if err := ircClient.Connect(serverString); err != nil {
-			log.Fatalf("Unable to prepare irc connection: %s", err)
-			time.Sleep(3 * time.Second)
+			log.Errorf("Unable to prepare irc connection: %s", err)
+			<-time.NewTimer(3 * time.Second).C // Sleep for 3 seconds.
+
 			continue
 		}
 
@@ -560,21 +571,22 @@ func ircSend() {
 	for {
 		m := <-imChan
 
-		switch {
-		case config.Irc.RateLimit.Type == "simple_delay":
-			log.Debugf("Sending to chat %s message: %s", m.ChatId, m.Text)
+		switch config.Irc.RateLimit.Type {
+		case "simple_delay":
+			log.Debugf("Sending to chat %s message: %s", m.ChatID, m.Text)
 
 			if m.Text[0:4] == "/me " {
-				ircClient.Action(m.ChatId, m.Text)
+				ircClient.Action(m.ChatID, m.Text)
 			} else {
-				ircClient.Privmsg(m.ChatId, m.Text)
+				ircClient.Privmsg(m.ChatID, m.Text)
 			}
 
 			sleepDelay := time.Duration(config.Irc.RateLimit.SimpleDelay) * time.Millisecond
 			log.Debugf("Due to delay type simple_delay waiting for %d milliseconds", int(sleepDelay))
 			time.Sleep(sleepDelay)
-		case config.Irc.RateLimit.Type == "token_bucket":
+		case "token_bucket":
 			var currentTimeMs = time.Now().UnixMilli()
+
 			var expirationTimeMs = config.Irc.RateLimit.TokenBucket.ExpirationTime * 1000
 
 			if len(msgBucket.Timestamps) > 0 {
@@ -588,6 +600,7 @@ func ircSend() {
 
 				bucketFill := len(newBucket.Timestamps)
 				log.Debugf("Message bucket filled with %d/%d messages", bucketFill, config.Irc.RateLimit.TokenBucket.Size)
+
 				newBucket.Timestamps = append(newBucket.Timestamps, currentTimeMs)
 
 				if bucketFill >= config.Irc.RateLimit.TokenBucket.Size {
@@ -598,15 +611,17 @@ func ircSend() {
 			} else {
 				// Проставим время отправки сообщения
 				log.Debug("Message bucket is empty")
+
 				msgBucket.Timestamps = append(msgBucket.Timestamps, currentTimeMs)
 			}
 
 			if msgBucket.IsFull {
 				log.Debug("Message bucket overflowed, hitting ratelimit")
+
 				sleepPeriod := expirationTimeMs - (currentTimeMs - msgBucket.Timestamps[len(msgBucket.Timestamps)-1])
 
 				if config.Irc.RateLimit.TokenBucket.Limit > 0 {
-					sleepPeriod = sleepPeriod / int64(config.Irc.RateLimit.TokenBucket.Limit)
+					sleepPeriod /= int64(config.Irc.RateLimit.TokenBucket.Limit)
 				}
 
 				log.Debugf("Sleeping for %d milliseconds", sleepPeriod)
@@ -616,20 +631,20 @@ func ircSend() {
 				msgBucket.Timestamps[len(msgBucket.Timestamps)-1] = currentTimeMs
 			}
 
-			log.Debugf("Sending to chat %s message: %s", m.ChatId, m.Text)
+			log.Debugf("Sending to chat %s message: %s", m.ChatID, m.Text)
 
 			if len(m.Text) > 4 && m.Text[0:4] == "/me " {
-				ircClient.Action(m.ChatId, m.Text[4:])
+				ircClient.Action(m.ChatID, m.Text[4:])
 			} else {
-				ircClient.Privmsg(m.ChatId, m.Text)
+				ircClient.Privmsg(m.ChatID, m.Text)
 			}
 		default:
-			log.Debugf("Sending to chat %s message: %s", m.ChatId, m.Text)
+			log.Debugf("Sending to chat %s message: %s", m.ChatID, m.Text)
 
 			if len(m.Text) > 4 && m.Text[0:4] == "/me " {
-				ircClient.Action(m.ChatId, m.Text[4:])
+				ircClient.Action(m.ChatID, m.Text[4:])
 			} else {
-				ircClient.Privmsg(m.ChatId, m.Text)
+				ircClient.Privmsg(m.ChatID, m.Text)
 			}
 		}
 	}
@@ -638,12 +653,12 @@ func ircSend() {
 func ircSendUnrestricted() {
 	for {
 		m := <-imChanUnrestricted
-		log.Debugf("Skipping ratelimit and sending to chat %s message: %s", m.ChatId, m.Text)
+		log.Debugf("Skipping ratelimit and sending to chat %s message: %s", m.ChatID, m.Text)
 
 		if len(m.Text) > 4 && m.Text[0:4] == "/me " {
-			ircClient.Action(m.ChatId, m.Text[4:])
+			ircClient.Action(m.ChatID, m.Text[4:])
 		} else {
-			ircClient.Privmsg(m.ChatId, m.Text)
+			ircClient.Privmsg(m.ChatID, m.Text)
 		}
 	}
 }

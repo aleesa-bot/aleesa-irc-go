@@ -8,7 +8,7 @@ import "strings"
   активируют мягкий ratelimit на стороне сервера, без них, сервер просто рвёт соединение по превышению лимитов
 */
 
-// Удаляет сведения о MODE-ах пользователя для заданного канала
+// Удаляет сведения о MODE-ах пользователя для заданного канала.
 func userModeDeleteUser(ircChan string, nick string) {
 	channel, ok := userMode.Get(ircChan)
 
@@ -24,16 +24,17 @@ func userModeDeleteUser(ircChan string, nick string) {
 	}
 }
 
-// Удаляет сведения о MODE-ах пользователя для всех каналов, на которых есть бот
+// Удаляет сведения о MODE-ах пользователя для всех каналов, на которых есть бот.
 func userModePurgeUser(nick string) {
 	for _, channel := range config.Irc.Channels {
 		userModeDeleteUser(channel, nick)
 	}
 }
 
-// Обновляет или создаёт запись о mode-ах пользователей
+// Обновляет или создаёт запись о mode-ах пользователей.
 func userModeUpdateUser(ircChan string, nick string, modes string) {
 	var channelData map[string]map[string]bool
+
 	channel, ok := userMode.Get(ircChan)
 
 	if ok {
@@ -48,12 +49,12 @@ func userModeUpdateUser(ircChan string, nick string, modes string) {
 		channelData[nick] = make(map[string]bool)
 	}
 
-	switch {
-	case modes[:1] == "+":
+	switch modes[:1] {
+	case "+":
 		for _, mode := range strings.Split(modes[1:], "") {
 			channelData[nick][mode] = true
 		}
-	case modes[:1] == "-":
+	case "-":
 		for _, mode := range strings.Split(modes[1:], "") {
 			channelData[nick][mode] = false
 		}
@@ -62,9 +63,10 @@ func userModeUpdateUser(ircChan string, nick string, modes string) {
 	userMode.Set(ircChan, channelData)
 }
 
-// Возвращает значение MODE-а v для запрошенного ника
+// Возвращает значение MODE-а v для запрошенного ника.
 func userModeIsVoiced(ircChan string, nick string) bool {
 	var channelData map[string]map[string]bool
+
 	channel, ok := userMode.Get(ircChan)
 
 	if ok {
@@ -88,9 +90,10 @@ func userModeIsVoiced(ircChan string, nick string) bool {
 	return false
 }
 
-// Возвращает значение MODE-а o для запрошенного ника
+// Возвращает значение MODE-а o для запрошенного ника.
 func userModeIsOped(ircChan string, nick string) bool {
 	var channelData map[string]map[string]bool
+
 	channel, ok := userMode.Get(ircChan)
 
 	if ok {
@@ -116,6 +119,7 @@ func userModeIsOped(ircChan string, nick string) bool {
 
 func userModeIsHere(ircChan string, nick string) bool {
 	var channelData map[string]map[string]bool
+
 	channel, ok := userMode.Get(ircChan)
 
 	if ok {
