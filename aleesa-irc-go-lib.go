@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,7 +17,9 @@ import (
 // ircClientInit горутинка для работы с протоколом irc.
 func ircClientRun() {
 	for !shutdown {
-		// Иницализируем irc-клиента
+		// Иницализируем irc-клиента.
+		// TODO: make use of capabilities: https://defs.ircdocs.horse/defs/clientcaps .
+		// TODO: make use of tags caps https://defs.ircdocs.horse/defs/tags .
 		serverString := fmt.Sprintf("%s:%d", config.Irc.Server, config.Irc.Port)
 		log.Debugf("Preparing to connect to %s", serverString)
 		log.Debugf("Using nick %s and username %s", config.Irc.Nick, config.Irc.User)
@@ -49,12 +52,11 @@ func ircClientRun() {
 		// Навесим коллбэков на некоторые ответы сервера на наши запросы.
 
 		// 001 RPL_WELCOME уже есть в github.com/thoj/go-ircevent/irc_callback.go.
+
 		// Сделаем уже что-то полезное! Motd нам уже прислали и теперь можно авторизоваться и джойниться
 		ircClient.AddCallback("004", func(e *irc.Event) {
 			// Из это строки мы можем узнать, какие флаги для user MODE и channem MODE можно навешивать.
 			// Как минимум, эта строка нам нужна, чтобы выяснить, можем ли мы взять себе +B, мы же бот :).
-			log.Debugf("004 RPL_MYINFO, %s", e.Raw)
-
 			e.Connection.Lock()
 
 			// Формат строки с MODE-ами https://datatracker.ietf.org/doc/html/rfc2812#section-5.1 .
@@ -80,12 +82,15 @@ func ircClientRun() {
 			e.Connection.Unlock()
 		})
 
+		ircClient.AddCallback("005", func(e *irc.Event) {
+			// TODO: Make use of it. https://defs.ircdocs.horse/defs/isupport
+		})
+
 		ircClient.AddCallback("319", func(e *irc.Event) {
 			/* Это одна из строк с данными, прилетающая в ответ на запрос whois на определённого юзера
 			 * Из этой строки нас интересует, на каких каналах пользователь op (то есть с префиксом @) или имеет voice
 			 * (то есть с префиксом +) чтобы внести его в свою базу mode-ов.
 			 */
-			log.Debugf("319 RPL_WHOISCHANNELS, %s", e.Raw)
 			channelsWithModes := strings.Split(e.Arguments[2], " ")
 			dstNick := e.Arguments[1]
 
@@ -120,7 +125,6 @@ func ircClientRun() {
 
 		ircClient.AddCallback("353", func(e *irc.Event) {
 			// Это одна из строк данных, прилетающая в ответ на запрос names, на канале
-			log.Debugf("353 RPL_NAMREPLY, %s", e.Raw)
 			e.Connection.Lock()
 			namesString := e.Arguments[3]
 			channel := e.Arguments[2]
@@ -155,16 +159,9 @@ func ircClientRun() {
 			e.Connection.Unlock()
 		})
 
-		ircClient.AddCallback("352", func(e *irc.Event) {
-			// Относительно бесполезная для нас команда. Не возвращает канала (в случае с ngircd), так что узнать mode
-			// юзера на конкретном канале из этого невозможно. А остальные данные пока непонятно куда применять.
-			log.Warnf("352 RPL_WHOREPLY, %s", e.Raw)
-		})
-
 		// Если сервер не может прочитать MOTD, то он может вернуть 422 ERR_NOMOTD, тоде самое навесим и туда тоже.
 		ircClient.AddCallback("376", func(e *irc.Event) {
-			log.Debugf("376 RPL_ENDOFMOTD %s", e.Raw)
-
+			// TODO: make use of modes https://defs.ircdocs.horse/defs/usermodes
 			// Если у нас есть доступный +B возьмём его себе, мы же бот.
 			announced, _ := availableUserModes.Get("announced")
 			botFlag, _ := availableUserModes.Get("B")
@@ -173,6 +170,7 @@ func ircClientRun() {
 				if botFlag {
 					log.Info("Grabbing +B flag to mark me as bot")
 					ircClient.Mode(ircClient.GetNick(), "+B")
+					// TODO: Wait for it.
 				} else {
 					log.Info("Skip +B flag, server does not support it, noone will know that I am bot")
 				}
@@ -195,6 +193,7 @@ func ircClientRun() {
 				log.Infof("Joining to %s channel", channel)
 				ircClient.Join(channel)
 			}
+			// TODO: wait for join or join error.
 		})
 
 		// Навесим коллбэков на все возможные и невозможные error status code, которые мы можем получить и сдампим это
@@ -234,8 +233,7 @@ func ircClientRun() {
 
 		// Аналогичный коллбэк висит на 376 RPL_ENDOFMOTD.
 		ircClient.AddCallback("422", func(e *irc.Event) {
-			log.Debugf("422 ERR_NOMOTD %s", e.Raw)
-
+			// TODO: make use of modes https://defs.ircdocs.horse/defs/usermodes
 			// Если у нас есть доступный +B возьмём его себе, мы же бот.
 			botFlag, ok := availableUserModes.Get("B")
 
@@ -304,6 +302,16 @@ func ircClientRun() {
 			log.Warnf("442 ERR_NOTONCHANNEL, %s", e.Raw)
 		})
 
+		ircClient.AddCallback("443", func(e *irc.Event) {
+			// Returned when a client tries to invite a user to a channel they're already on.
+			log.Errorf("443 ERR_USERONCHANNEL, %s", e.Raw)
+		})
+
+		ircClient.AddCallback("446", func(e *irc.Event) {
+			// Returned by USERS when it has been disabled or not implemented.
+			log.Errorf("446 ERR_USERSDISABLED, %s", e.Raw)
+		})
+
 		ircClient.AddCallback("451", func(e *irc.Event) {
 			// Предполагается, что надо авторизоваться, перед тем как что-то делать на сервере
 			log.Errorf("451 ERR_NOTREGISTERED, %s", e.Raw)
@@ -326,19 +334,19 @@ func ircClientRun() {
 			log.Errorf("465 ERR_YOUREBANNEDCREEP, %s", e.Raw)
 		})
 
+		ircClient.AddCallback("467", func(e *irc.Event) {
+			log.Errorf("467 ERR_KEYSET, %s", e.Raw)
+		})
+
 		ircClient.AddCallback("471", func(e *irc.Event) {
 			// Это значит, что народу на канале максимальное количество. Будем пробовать присунуться раз в 30 сек.
 			channel := e.Arguments[1]
 			log.Warnf("471 ERR_CHANNELISFULL, %s", e.Raw)
-			time.Sleep(30 * time.Second)
+			<-time.NewTimer(30 * time.Second).C
 
 			// Проверяем, а должны ли мы быть заджоенныеми к указанному, каналу, а то вдруг нет?
-			for _, ircChan := range config.Irc.Channels {
-				if ircChan == channel {
-					ircClient.Join(channel)
-
-					break
-				}
+			if slices.Contains(config.Irc.Channels, channel) {
+				ircClient.Join(channel)
 			}
 		})
 
@@ -351,15 +359,11 @@ func ircClientRun() {
 			// По завершении работ +i снимают.
 			channel := e.Arguments[1]
 			log.Errorf("473 ERR_INVITEONLYCHAN, %s", e.Raw)
-			time.Sleep(30 * time.Second)
+			<-time.NewTimer(30 * time.Second).C
 
-			// Проверяем, а должны ли мы быть заджоенныеми к указанному, каналу, а то вдруг нет?
-			for _, ircChan := range config.Irc.Channels {
-				if ircChan == channel {
-					ircClient.Join(channel)
-
-					break
-				}
+			// Проверяем, а должны ли мы быть заджоенными к указанному, каналу, а то вдруг нет?
+			if slices.Contains(config.Irc.Channels, channel) {
+				ircClient.Join(channel)
 			}
 		})
 
@@ -369,17 +373,19 @@ func ircClientRun() {
 
 			log.Errorf("474 ERR_BANNEDFROMCHAN, %s", e.Raw)
 			// Если нас забанили, то информацию о MODE-ах пользователей мы теряем
-			time.Sleep(30 * time.Second)
+			<-time.NewTimer(30 * time.Second).C
+
 			// Вдруг, нас забанили, но какбэ не навсегда?
+			// TODO: вынести в настройки?
 
 			// Проверяем, а должны ли мы быть заджоенныеми к указанному, каналу, а то вдруг нет?
-			for _, ircChan := range config.Irc.Channels {
-				if ircChan == channel {
-					ircClient.Join(channel)
-
-					break
-				}
+			if slices.Contains(config.Irc.Channels, channel) {
+				ircClient.Join(channel)
 			}
+		})
+
+		ircClient.AddCallback("475", func(e *irc.Event) {
+			log.Errorf("475 ERR_BADCHANNELKEY, %s", e.Raw)
 		})
 
 		ircClient.AddCallback("477", func(e *irc.Event) {
@@ -388,6 +394,10 @@ func ircClientRun() {
 
 		ircClient.AddCallback("478", func(e *irc.Event) {
 			log.Errorf("478 ERR_BANLISTFULL, %s", e.Raw)
+		})
+
+		ircClient.AddCallback("481", func(e *irc.Event) {
+			log.Errorf("481 ERR_NOPRIVILEGES, %s", e.Raw)
 		})
 
 		ircClient.AddCallback("482", func(e *irc.Event) {
@@ -400,6 +410,10 @@ func ircClientRun() {
 
 		ircClient.AddCallback("485", func(e *irc.Event) {
 			log.Errorf("485 ERR_UNIQOPPRIVSNEEDED, %s", e.Raw)
+		})
+
+		ircClient.AddCallback("491", func(e *irc.Event) {
+			log.Errorf("491 ERR_NOOPERHOST, %s", e.Raw)
 		})
 
 		ircClient.AddCallback("501", func(e *irc.Event) {
@@ -421,7 +435,8 @@ func ircClientRun() {
 				userMode.Delete(channel)
 				// TODO: reason?
 				log.Warnf("%s kicks us from %s", srcFullNick, channel)
-				time.Sleep(10 * time.Second)
+				<-time.NewTimer(10 * time.Second).C
+
 				ircClient.Join(channel)
 			} else {
 				// Кого-то другого кикнули с канала
@@ -557,11 +572,9 @@ func ircClientRun() {
 			ircMsgParser(e.Arguments[0], e.Nick, e.User, e.Source, e.Arguments[1])
 		})
 
-		/*
-			ircClient.AddCallback("*", func(e *irc.Event) {
-				log.Debugf("Incoming EVENT (Raw): %s", e.Raw)
-			})
-		*/
+		ircClient.AddCallback("*", func(e *irc.Event) {
+			log.Debugf("Incoming EVENT (Raw): %s", e.Raw)
+		})
 
 		log.Debugf("Make an actual connection to irc")
 
@@ -594,7 +607,7 @@ func ircSend() {
 
 			sleepDelay := time.Duration(config.Irc.RateLimit.SimpleDelay) * time.Millisecond
 			log.Debugf("Due to delay type simple_delay waiting for %d milliseconds", int(sleepDelay))
-			time.Sleep(sleepDelay)
+			<-time.NewTimer(sleepDelay).C
 		case "token_bucket":
 			var currentTimeMs = time.Now().UnixMilli()
 
@@ -636,7 +649,8 @@ func ircSend() {
 				}
 
 				log.Debugf("Sleeping for %d milliseconds", sleepPeriod)
-				time.Sleep(time.Duration(sleepPeriod) * time.Millisecond)
+				<-time.NewTimer(time.Duration(sleepPeriod) * time.Millisecond).C
+
 				currentTimeMs = time.Now().UnixMilli()
 				// Обновим время отправки сообщения
 				msgBucket.Timestamps[len(msgBucket.Timestamps)-1] = currentTimeMs
