@@ -13,7 +13,7 @@ clean:
 
 upgrade:
 	rm -rf vendor
-	go get -d -u -t ./...
+	go get -u -t -tool ./...
 	go mod tidy
 	go mod vendor
 
